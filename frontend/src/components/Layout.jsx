@@ -5,7 +5,7 @@ import LoginForm from './LoginForm'; // Import the new LoginForm component
 import '../App.css'; // Make sure we have access to our CSS
 
 function Layout() {
-  const { currentUser, userId, signOut } = useAuth(); // Get auth state and functions with userId
+  const { currentUser, userId, userRole, signOut } = useAuth(); // Add userRole to destructuring
   const [showLoginForm, setShowLoginForm] = useState(false);
   const [isSigningOut, setIsSigningOut] = useState(false);
 
@@ -41,6 +41,17 @@ function Layout() {
     backgroundColor: '#d93025'
   };
 
+  // Style for admin badge
+  const adminBadgeStyle = {
+    display: 'inline-block',
+    backgroundColor: '#FF8C00', // Orange color for admin badge
+    color: 'white',
+    padding: '2px 6px',
+    borderRadius: '4px',
+    fontSize: '12px',
+    marginLeft: '8px'
+  };
+
   const userInfoStyle = {
     fontWeight: 'bold',
     fontSize: '14px',
@@ -67,10 +78,19 @@ function Layout() {
           <li className="nav-item">
             <Link to="/">דף ראשי (צ'אט)</Link>
           </li>
-          <li className="nav-item">
-            <Link to="/workspaces">ניהול סביבות עבודה</Link>
-          </li>
-          {/* Add other links here later */}
+          {/* Show Workspace Management link only for admins */}
+          {userRole === 'admin' && (
+            <li className="nav-item">
+              <Link to="/workspaces">ניהול סביבות עבודה</Link>
+            </li>
+          )}
+          {/* Show Admin link only if user has admin role */}
+          {userRole === 'admin' && (
+            <li className="nav-item">
+              <Link to="/admin">ניהול מערכת</Link>
+              <span style={adminBadgeStyle}>מנהל</span>
+            </li>
+          )}
         </ul>
 
         {/* Authentication Section */}
@@ -79,6 +99,11 @@ function Layout() {
             <>
               <div style={userInfoStyle}>
                 <span>שלום, {currentUser.displayName || currentUser.email}</span>
+                {userRole === 'admin' && (
+                  <div style={{ marginTop: '4px', fontSize: '12px', color: '#FF8C00' }}>
+                    מנהל מערכת
+                  </div>
+                )}
                 <div style={userIdStyle}>
                   מזהה משתמש: {userId}
                 </div>

@@ -6,6 +6,7 @@ psycopg2-binary   # Postgres driver (sync version for simplicity first)
 google-cloud-storage
 python-multipart
 firebase-admin
+pydantic[email]
 # Or use asyncpg for async operations later:
 # asyncpg
 # databases[postgresql] # Async database toolkit (optional but nice with asyncpg)

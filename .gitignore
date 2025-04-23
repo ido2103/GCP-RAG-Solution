@@ -160,7 +160,7 @@ frontend/.vite/
 
 # Firebase Service Account Key (NEVER commit this!)
 firebase-service-account.json
-*.json
+
 
 # OS generated files
 .DS_Store

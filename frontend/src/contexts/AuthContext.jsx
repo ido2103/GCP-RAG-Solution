@@ -8,6 +8,7 @@ import {
   updateProfile
 } from 'firebase/auth';
 import { auth } from '../firebaseConfig'; // Import Firebase auth service
+import { jwtDecode } from 'jwt-decode'; // <-- Import jwt-decode
 
 // Create the context
 const AuthContext = createContext();
@@ -24,6 +25,8 @@ export function AuthProvider({ children }) {
   const [loading, setLoading] = useState(true); // Track initial auth state loading
   const [idToken, setIdToken] = useState(null); // State to store the ID token
   const [authError, setAuthError] = useState(null); // State to track auth errors
+  const [userRole, setUserRole] = useState(null); // <-- Add state for user role
+  const [userGroups, setUserGroups] = useState([]); // <-- Add state for user groups
 
   useEffect(() => {
     // Listen for authentication state changes
@@ -33,18 +36,37 @@ export function AuthProvider({ children }) {
         // Set the user ID
         setUserId(user.uid);
         try {
-          const token = await user.getIdToken();
+          const token = await user.getIdToken(true); // Force refresh token
           setIdToken(token);
           console.log("Auth state changed: User logged in", user.uid);
-          // TODO: Store token securely if needed for backend API calls
+
+          // <-- Decode token and set claims -->
+          try {
+            const decodedToken = jwtDecode(token);
+            const role = decodedToken.role || null; // Extract role claim
+            const groups = decodedToken.groups || []; // Extract groups claim
+            setUserRole(role);
+            setUserGroups(groups);
+            console.log(`User role: ${role}, groups: ${groups.join(', ')}`);
+          } catch (decodeError) {
+            console.error("Error decoding ID token:", decodeError);
+            setUserRole(null);
+            setUserGroups([]);
+          }
+          // <-- End decoding -->
+
         } catch (error) {
-          console.error("Error getting ID token:", error);
+          console.error("Error getting/decoding ID token:", error);
           setIdToken(null);
+          setUserRole(null);
+          setUserGroups([]);
         }
       } else {
         console.log("Auth state changed: No user logged in.");
         setUserId(null);
         setIdToken(null);
+        setUserRole(null); // <-- Reset role on logout
+        setUserGroups([]); // <-- Reset groups on logout
       }
       setLoading(false); // Auth state determined, stop loading
     });
@@ -58,7 +80,7 @@ export function AuthProvider({ children }) {
     setAuthError(null);
     try {
       await signInWithEmailAndPassword(auth, email, password);
-      // Auth state listener will handle setting user and token
+      // Auth state listener will handle setting user, token, and claims
     } catch (error) {
       console.error("Error signing in with email/password:", error);
       setAuthError({
@@ -78,7 +100,7 @@ export function AuthProvider({ children }) {
       if (displayName) {
         await updateProfile(result.user, { displayName });
       }
-      // Auth state listener will handle setting user and token
+      // Auth state listener will handle setting user, token, and initial (likely null) claims
     } catch (error) {
       console.error("Error creating user with email/password:", error);
       setAuthError({
@@ -93,7 +115,7 @@ export function AuthProvider({ children }) {
   const signOut = async () => {
     try {
       await firebaseSignOut(auth);
-      // Auth state listener will handle setting user and token to null
+      // Auth state listener will handle setting user, token, role, and groups to null/empty
     } catch (error) {
       console.error("Error signing out:", error);
     }
@@ -106,6 +128,8 @@ export function AuthProvider({ children }) {
     idToken, // Provide the ID token
     loading,
     authError,
+    userRole, // <-- Add userRole to context value
+    userGroups, // <-- Add userGroups to context value
     signInWithEmail,
     createUserWithEmail,
     signOut,

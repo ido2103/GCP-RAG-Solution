@@ -1,6 +1,7 @@
 // frontend/src/components/WorkspaceList.jsx
 import React, { useState, useEffect } from 'react';
 import { getWorkspaces } from '../services/workspaceService';
+import { useAuth } from '../contexts/AuthContext';
 import '../App.css';
 
 // Accept props from parent components, with ability to either receive workspaces or fetch them
@@ -8,6 +9,8 @@ function WorkspaceList({ workspaces: propWorkspaces, selectedWorkspaceId, onSele
   const [localWorkspaces, setLocalWorkspaces] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState(null);
+  const { userRole } = useAuth(); // Get user role from auth context
+  const isAdmin = userRole === 'admin';
 
   // Use workspaces from props if available, otherwise use locally fetched ones
   const effectiveWorkspaces = propWorkspaces || localWorkspaces;
@@ -44,11 +47,15 @@ function WorkspaceList({ workspaces: propWorkspaces, selectedWorkspaceId, onSele
     return <div className="error-text">שגיאה: {error}</div>;
   }
 
-  // Empty state
+  // Empty state - Different messages for admin vs regular users
   if (!effectiveWorkspaces || effectiveWorkspaces.length === 0) {
     return (
       <div className="workspace-list-container">
-        <p>לא נמצאו סביבות עבודה. יש ליצור סביבת עבודה חדשה.</p>
+        {isAdmin ? (
+          <p>לא נמצאו סביבות עבודה. יש ליצור סביבת עבודה חדשה.</p>
+        ) : (
+          <p>אין לך גישה לסביבות עבודה כרגע. צור קשר עם מנהל המערכת כדי לקבל הרשאות.</p>
+        )}
       </div>
     );
   }

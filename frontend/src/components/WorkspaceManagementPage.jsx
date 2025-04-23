@@ -3,9 +3,14 @@ import CreateWorkspaceForm from './CreateWorkspaceForm';
 import WorkspaceList from './WorkspaceList';
 import { uploadFilesDirectly, ALLOWED_FILE_EXTENSIONS } from '../services/uploadService';
 import { getWorkspaces } from '../services/workspaceService';
+import { useAuth } from '../contexts/AuthContext';
 import '../App.css';
 
 function WorkspaceManagementPage() {
+  // Get user role from auth context
+  const { userRole } = useAuth(); 
+  const isAdmin = userRole === 'admin';
+
   // State for workspace management
   const [refreshKey, setRefreshKey] = useState(0);
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState(null);
@@ -131,10 +136,12 @@ function WorkspaceManagementPage() {
     <div className="workspace-management-page">
       <h1>ניהול סביבות עבודה</h1>
 
-      {/* Create Workspace Form */}
-      <div className="form-section">
-        <CreateWorkspaceForm onWorkspaceCreated={handleWorkspaceCreated} />
-      </div>
+      {/* Create Workspace Form - Only show for admin users */}
+      {isAdmin && (
+        <div className="form-section">
+          <CreateWorkspaceForm onWorkspaceCreated={handleWorkspaceCreated} />
+        </div>
+      )}
 
       {/* Workspace List with selection */}
       <div className="list-section">
@@ -147,61 +154,63 @@ function WorkspaceManagementPage() {
         />
       </div>
 
-      {/* File Upload Section */}
-      <div className="upload-section">
-        <h2>העלאת קבצים לסביבת עבודה</h2>
-        
-        {!selectedWorkspaceId ? (
-          <p className="warning-text">יש לבחור סביבת עבודה לפני העלאת קבצים.</p>
-        ) : (
-          <p>מעלה קבצים לסביבת עבודה: <strong>{selectedWorkspaceName || 'טוען...'}</strong></p>
-        )}
-        
-        <div className="file-input-container">
-          <p className="file-types-info">
-            סוגי קבצים מורשים: {ALLOWED_FILE_EXTENSIONS.join(', ')}
-          </p>
-          <input
-            type="file"
-            onChange={handleFileChange}
-            disabled={!selectedWorkspaceId || isUploading}
-            ref={fileInputRef}
-            className="file-input"
-            multiple
-            accept={acceptFileTypes}
-          />
-        </div>
-        
-        {isUploading && (
-          <div className="upload-progress">
-            <p>מעלה קבצים... {uploadProgress}%</p>
-            {/* Progress bar */}
-            <div className="progress-bar-container">
-              <div 
-                className="progress-bar"
-                style={{ width: `${uploadProgress}%` }}
-              ></div>
+      {/* File Upload Section - Only show if workspaces are available */}
+      {workspaces.length > 0 && (
+        <div className="upload-section">
+          <h2>העלאת קבצים לסביבת עבודה</h2>
+          
+          {!selectedWorkspaceId ? (
+            <p className="warning-text">יש לבחור סביבת עבודה לפני העלאת קבצים.</p>
+          ) : (
+            <p>מעלה קבצים לסביבת עבודה: <strong>{selectedWorkspaceName || 'טוען...'}</strong></p>
+          )}
+          
+          <div className="file-input-container">
+            <p className="file-types-info">
+              סוגי קבצים מורשים: {ALLOWED_FILE_EXTENSIONS.join(', ')}
+            </p>
+            <input
+              type="file"
+              onChange={handleFileChange}
+              disabled={!selectedWorkspaceId || isUploading}
+              ref={fileInputRef}
+              className="file-input"
+              multiple
+              accept={acceptFileTypes}
+            />
+          </div>
+          
+          {isUploading && (
+            <div className="upload-progress">
+              <p>מעלה קבצים... {uploadProgress}%</p>
+              {/* Progress bar */}
+              <div className="progress-bar-container">
+                <div 
+                  className="progress-bar"
+                  style={{ width: `${uploadProgress}%` }}
+                ></div>
+              </div>
             </div>
-          </div>
-        )}
-        
-        {uploadResults.length > 0 && (
-          <div className="upload-results">
-            <h3>תוצאות העלאה:</h3>
-            <ul className="results-list">
-              {uploadResults.map((result, index) => (
-                <li 
-                  key={index} 
-                  className={`result-item ${result.status === 'success' ? 'success' : 'error'}`}
-                >
-                  <span className="filename">{result.filename || 'קובץ'}: </span>
-                  <span className="message">{result.message}</span>
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-      </div>
+          )}
+          
+          {uploadResults.length > 0 && (
+            <div className="upload-results">
+              <h3>תוצאות העלאה:</h3>
+              <ul className="results-list">
+                {uploadResults.map((result, index) => (
+                  <li 
+                    key={index} 
+                    className={`result-item ${result.status === 'success' ? 'success' : 'error'}`}
+                  >
+                    <span className="filename">{result.filename || 'קובץ'}: </span>
+                    <span className="message">{result.message}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

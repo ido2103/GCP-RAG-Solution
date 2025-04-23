@@ -15,6 +15,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 # --- Database Imports ---
 import psycopg2
+import psycopg2.extras  # Added for execute_batch and other utilities
 from psycopg2 import pool # Although pool is used in db.py, importing here can be useful for type hinting if needed
 
 # --- Google Cloud Imports ---
@@ -125,8 +126,8 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
     """Verify Firebase ID token and return user details including custom claims."""
     token = credentials.credentials
     try:
-        # Verify the Firebase token
-        decoded_token = auth.verify_id_token(token)
+        # Verify the Firebase token with a 10-second clock skew tolerance
+        decoded_token = auth.verify_id_token(token, clock_skew_seconds=10)
         
         # Extract standard user info
         user_id = decoded_token['uid']
@@ -259,28 +260,42 @@ async def list_workspaces(
     """
     Retrieves a list of workspaces.
     - Admins see all workspaces.
-    - Non-admins see workspaces they own (TODO: expand to groups).
+    - Non-admins see workspaces they own or have access to via group membership.
     """
     workspaces = []
-    values = (limit, skip)
     
     # Base query structure
     base_query = """
-        SELECT workspace_id, name, owner_user_id, created_at,
-               config_chunking_method, config_chunk_size,
-               config_chunk_overlap, config_similarity_metric
-        FROM workspaces
+        SELECT w.workspace_id, w.name, w.owner_user_id, w.created_at,
+               w.config_chunking_method, w.config_chunk_size,
+               w.config_chunk_overlap, w.config_similarity_metric
+        FROM workspaces w
     """
     
     # Filter based on role
     if current_user.role and current_user.role.lower() == 'admin':
         logger.info(f"Admin user {current_user.user_id} listing all workspaces.")
-        query = f"{base_query} ORDER BY created_at DESC LIMIT %s OFFSET %s;"
+        query = f"{base_query} ORDER BY w.created_at DESC LIMIT %s OFFSET %s;"
+        values = (limit, skip)
     else:
-        logger.info(f"User {current_user.user_id} listing their owned workspaces.")
-        # TODO: This needs to be updated later to include group access
-        query = f"{base_query} WHERE owner_user_id = %s ORDER BY created_at DESC LIMIT %s OFFSET %s;"
-        values = (current_user.user_id, limit, skip)
+        logger.info(f"User {current_user.user_id} listing workspaces they can access.")
+        # Include workspaces the user owns OR has access to via group membership
+        query = f"""
+            {base_query} 
+            WHERE w.owner_user_id = %s 
+            OR w.workspace_id IN (
+                SELECT wga.workspace_id 
+                FROM workspace_group_access wga
+                WHERE wga.group_id IN (
+                    SELECT ugm.group_id 
+                    FROM user_group_memberships ugm 
+                    WHERE ugm.user_id = %s
+                )
+            )
+            ORDER BY w.created_at DESC 
+            LIMIT %s OFFSET %s;
+        """
+        values = (current_user.user_id, current_user.user_id, limit, skip)
 
     try:
         with get_db_session() as conn:
@@ -311,17 +326,17 @@ async def get_workspace(
     """
     Retrieves details for a single workspace by its UUID.
     - Admins can retrieve any workspace.
-    - Non-admins can only retrieve workspaces they own (TODO: expand to groups).
+    - Non-admins can retrieve workspaces they own or have access to via group membership.
     """
     workspace_id_str = str(workspace_id) # Convert UUID to string for psycopg2
     
     # Base query structure
     base_query = """
-        SELECT workspace_id, name, owner_user_id, created_at,
-               config_chunking_method, config_chunk_size,
-               config_chunk_overlap, config_similarity_metric
-        FROM workspaces
-        WHERE workspace_id = %s
+        SELECT w.workspace_id, w.name, w.owner_user_id, w.created_at,
+               w.config_chunking_method, w.config_chunk_size,
+               w.config_chunk_overlap, w.config_similarity_metric
+        FROM workspaces w
+        WHERE w.workspace_id = %s
     """
     
     # Determine query and values based on role
@@ -331,9 +346,23 @@ async def get_workspace(
         values = (workspace_id_str,)
     else:
         logger.info(f"User {current_user.user_id} attempting to retrieve workspace {workspace_id_str}")
-        # TODO: This needs to be updated later to include group access
-        query = f"{base_query} AND owner_user_id = %s;"
-        values = (workspace_id_str, current_user.user_id)
+        # Include group access check
+        query = f"""
+            {base_query}
+            AND (
+                w.owner_user_id = %s
+                OR w.workspace_id IN (
+                    SELECT wga.workspace_id 
+                    FROM workspace_group_access wga
+                    WHERE wga.group_id IN (
+                        SELECT ugm.group_id 
+                        FROM user_group_memberships ugm 
+                        WHERE ugm.user_id = %s
+                    )
+                )
+            );
+        """
+        values = (workspace_id_str, current_user.user_id, current_user.user_id)
 
     try:
         with get_db_session() as conn:
@@ -400,13 +429,25 @@ async def direct_upload(
     
     # Verify workspace exists and belongs to user
     query = """
-        SELECT workspace_id FROM workspaces
-        WHERE workspace_id = %s AND owner_user_id = %s;
+        SELECT w.workspace_id 
+        FROM workspaces w
+        WHERE w.workspace_id = %s AND (
+            w.owner_user_id = %s
+            OR w.workspace_id IN (
+                SELECT wga.workspace_id 
+                FROM workspace_group_access wga
+                WHERE wga.group_id IN (
+                    SELECT ugm.group_id 
+                    FROM user_group_memberships ugm 
+                    WHERE ugm.user_id = %s
+                )
+            )
+        );
     """
     try:
         with get_db_session() as conn:
             with conn.cursor() as cur:
-                cur.execute(query, (str(workspace_id), current_user.user_id))
+                cur.execute(query, (str(workspace_id), current_user.user_id, current_user.user_id))
                 result = cur.fetchone()
                 if not result:
                     raise HTTPException(
@@ -824,5 +865,71 @@ async def set_user_role(
     except Exception as e:
         logger.error(f"Failed to set custom claims for user {user_uid}: {e}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to update user claims in Firebase.")
+
+@app.get("/api/admin/workspaces/{workspace_id}/groups",
+         response_model=models.WorkspaceGroupAssignment, # Re-use the model for structure
+         tags=tags_admin,
+         summary="Get groups assigned to a specific workspace (Admin Only)")
+async def get_workspace_groups(
+    workspace_id: uuid.UUID = Path(..., description="The UUID of the workspace"),
+    admin_user: models.User = Depends(require_admin)
+):
+    """Retrieves the list of group IDs assigned to a specific workspace."""
+    query = "SELECT group_id FROM workspace_group_access WHERE workspace_id = %s;"
+    group_ids = []
+    try:
+        with get_db_session() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, (str(workspace_id),))
+                results = cur.fetchall()
+                if results:
+                    group_ids = [row[0] for row in results] # Fetchall returns tuples
+        logger.info(f"Admin {admin_user.user_id} retrieved groups for workspace {workspace_id}: {group_ids}")
+        # We need to return in the format expected by WorkspaceGroupAssignment, which expects a list of UUIDs
+        return models.WorkspaceGroupAssignment(group_ids=group_ids)
+    except Exception as e:
+        # Check if workspace itself exists, maybe add a check before this query? Good practice.
+        ws_check_query = "SELECT 1 FROM workspaces WHERE workspace_id = %s;"
+        try:
+            with get_db_session() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(ws_check_query, (str(workspace_id),))
+                    if not cur.fetchone():
+                         logger.warning(f"Admin {admin_user.user_id} tried to get groups for non-existent workspace {workspace_id}")
+                         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Workspace with ID {workspace_id} not found.")
+        except HTTPException: # Re-raise 404
+             raise
+        except Exception as check_err:
+             logger.error(f"Error checking workspace existence for {workspace_id} during group retrieval: {check_err}", exc_info=True)
+             # Fall through to general error if check fails
+
+        logger.error(f"Error retrieving groups for workspace {workspace_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            detail="Failed to retrieve groups for workspace.")
+
+@app.get("/api/admin/workspace-group-assignments",
+         response_model=List[models.WorkspaceGroupAccessEntry],
+         tags=tags_admin,
+         summary="Get all workspace-group assignments (Admin Only)")
+async def get_all_workspace_group_assignments(
+    admin_user: models.User = Depends(require_admin)
+):
+    """Retrieves all (workspace_id, group_id) pairs from the access table."""
+    query = "SELECT workspace_id, group_id FROM workspace_group_access;"
+    assignments = []
+    try:
+        with get_db_session() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query)
+                results = cur.fetchall()
+                if results:
+                    # Convert rows to the Pydantic model format
+                    assignments = [models.WorkspaceGroupAccessEntry(workspace_id=row[0], group_id=row[1]) for row in results]
+        logger.info(f"Admin {admin_user.user_id} retrieved all workspace-group assignments.")
+        return assignments
+    except Exception as e:
+        logger.error(f"Error retrieving all workspace-group assignments: {e}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            detail="Failed to retrieve workspace-group assignments.")
 
 # --- Add other endpoints later (e.g., listing documents, query endpoint) ---

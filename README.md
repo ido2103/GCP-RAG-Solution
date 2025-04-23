@@ -173,7 +173,17 @@ npm install
 
 This section outlines planned enhancements and tasks:
 
-### Core RAG Pipeline
+### ✅ Completed (Recent Updates):
+*   **Group-Based Access Control:** Implemented and refined workspace access permissions based on user group assignments.
+*   **UI Improvements:** Improved the user interface to adapt to different user roles:
+    *   Admin users have full access to workspace management and admin tools.
+    *   Regular users only see workspaces they have access to via group membership.
+    *   Added proper permission checks in both frontend and backend components.
+*   **Protected Routes:** Added route protection to ensure users can only access pages appropriate for their role.
+*   **Workspace Group Permissions:** Created admin UI for managing workspace-group access assignments with a visual matrix.
+*   **Improved Error Handling:** Enhanced error messaging and user feedback throughout the application.
+
+### Core RAG Pipeline (Next Focus)
 *   **Implement Document Processing Pipeline:** Set up the sequence for handling uploaded documents:
     *   Text Extraction (from PDFs, DOCX, TXT, etc.)
     *   Text Chunking (strategies for optimal context size)
@@ -187,13 +197,9 @@ This section outlines planned enhancements and tasks:
 *   **Frontend Query Interface:** Build the UI components for users to submit queries and view results within a workspace context.
 
 ### Access Control & Administration
-*   **Complete Group-Based Access:** Fully implement and test group assignments for workspace visibility in `list_workspaces` and `get_workspace` endpoints for non-admin users.
-*   **Build Frontend Admin Panel:** Develop the dedicated UI section for administrators to:
-    *   Manage users (list, view details, potentially invite/disable).
-    *   Manage groups (create, delete, list).
-    *   Assign users to groups.
-    *   Assign workspaces to groups.
-    *   Set user roles (promote/demote admins via custom claims).
+*   **Further Admin Panel Enhancements:** Continue to improve and refine the admin panel UI:
+    *   Add sorting, filtering, and pagination for better user/group management.
+    *   Provide more detailed user activity tracking.
 
 ### Workspace & Document Management
 *   **Enhance Workspace Creation/Management:** Add features like workspace descriptions, metadata, or deletion capabilities.
@@ -202,6 +208,5 @@ This section outlines planned enhancements and tasks:
 ### General Enhancements & Maintenance
 *   **Database Migrations:** Implement a formal database migration system (e.g., using Alembic) instead of manual SQL execution.
 *   **Testing:** Add comprehensive unit and integration tests for both backend and frontend.
-*   **Error Handling & UX:** Improve error handling across the application and provide better user feedback.
 *   **User Profile Management:** Consider adding basic user profile features (e.g., password change, display name).
 *   **Deployment:** Document deployment procedures for backend (Cloud Run), frontend (Firebase Hosting/Cloud Storage), and database (Cloud SQL).
