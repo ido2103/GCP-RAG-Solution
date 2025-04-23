@@ -1,0 +1,581 @@
+body {
+  margin: 0 !important;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  color: #DDDDDD !important; /* Add a default text color */
+  background-color: #333333 !important;
+  min-height: 100vh !important;
+}
+
+#root {
+  max-width: 100% !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  height: 100vh !important;
+  text-align: center;
+}
+
+.logo {
+  height: 6em;
+  padding: 1.5em;
+  will-change: filter;
+  transition: filter 300ms;
+}
+.logo:hover {
+  filter: drop-shadow(0 0 2em #646cffaa);
+}
+.logo.react:hover {
+  filter: drop-shadow(0 0 2em #61dafbaa);
+}
+
+@keyframes logo-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  a:nth-of-type(2) .logo {
+    animation: logo-spin infinite 20s linear;
+  }
+}
+
+.card {
+  padding: 2em;
+}
+
+.read-the-docs {
+  color: #888;
+}
+
+/* General App Layout */
+.app-container {
+  display: flex;
+  direction: rtl; /* Right-to-left layout */
+  height: 100vh;
+  width: 100%;
+  position: fixed;
+  top: 0;
+  right: 0;
+  background-color: #333333; /* Base background from index.css */
+  color: #DDDDDD; /* Base text color from index.css */
+}
+
+/* Main Content Area */
+.main-content {
+  flex-grow: 1 !important;
+  overflow-y: auto !important;
+  background-color: #333333 !important;
+  color: #DDDDDD !important;
+  padding: 20px !important;
+}
+
+/* Sidebar */
+.sidebar {
+  width: 250px;
+  border-left: 1px solid #555555;
+  padding: 20px;
+  background-color: #444444;
+  height: 100%;
+  box-sizing: border-box;
+  color: #DDDDDD;
+  overflow-y: auto;
+}
+
+.sidebar h2 {
+  border-bottom: 1px solid #666666;
+  padding-bottom: 10px;
+  margin-top: 0;
+}
+
+/* Upload Section */
+.upload-section {
+  margin-top: 25px;
+  border-top: 1px solid #555555; /* Darker border */
+  padding-top: 20px;
+  background-color: #3a3a3a !important;
+  color: #DDDDDD !important;
+  padding: 15px;
+  border-radius: 5px;
+}
+
+.upload-section h3 {
+  margin-top: 0;
+}
+
+.upload-progress .progress-bar-container {
+  width: 100%;
+  background-color: #555555;
+  border-radius: 4px;
+  height: 12px;
+  overflow: hidden; /* Ensure inner bar respects radius */
+}
+
+.upload-progress .progress-bar {
+  height: 100%;
+  background-color: #87CEEB; /* Sky blue progress */
+  transition: width 0.3s ease-in-out;
+}
+
+/* Text Styles for Messages */
+.error-text {
+  color: #FF6B6B; /* Lighter red for dark theme */
+  font-weight: bold;
+}
+
+.success-text {
+  color: #90EE90; /* Lighter green */
+  font-weight: bold;
+}
+
+.warning-text {
+  color: #FFD700; /* Gold/Yellow for warning */
+}
+
+/* Workspace List Specific Styles */
+.workspace-list-container {
+  margin-top: 20px;
+}
+
+.workspace-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.workspace-item {
+  border: 1px solid #555555;
+  border-radius: 5px;
+  padding: 10px 15px;
+  margin-bottom: 10px;
+  cursor: pointer;
+  transition: background-color 0.2s ease, border-color 0.2s ease;
+}
+
+.workspace-item:hover {
+  background-color: #505050;
+  border-color: #777777;
+}
+
+.workspace-item.selected {
+  background-color: #5a5a5a; /* Slightly lighter gray when selected */
+  border-left: 4px solid #87CEEB; /* Blue indicator border */
+  font-weight: bold;
+}
+
+.workspace-item .workspace-name {
+  display: block;
+  margin-bottom: 5px;
+  font-size: 1.1em;
+  color: #EEEEEE;
+}
+
+.workspace-item .workspace-details {
+  font-size: 0.9em;
+  color: #BBBBBB; /* Slightly dimmer text for details */
+}
+
+.workspace-item .workspace-details small {
+  margin-right: 10px; /* Space between detail items */
+  display: inline-block; /* Keep details on one line if possible */
+}
+
+/* === Form Element Styling === */
+/* More aggressive form element styling to override browser defaults */
+input[type="text"],
+input[type="email"],
+input[type="password"],
+input[type="search"],
+input[type="url"],
+input[type="tel"],
+input[type="number"],
+select,
+textarea,
+.app-container input[type="text"],
+.app-container input[type="file"],
+.app-container select,
+.app-container textarea,
+.app-container button {
+  background-color: #555555 !important; /* Force override */
+  color: #DDDDDD !important; /* Force override */
+  border: 1px solid #777777 !important; /* Force override */
+  padding: 0.6em 1em;
+  border-radius: 5px;
+  font-family: inherit;
+  font-size: 1em;
+  margin: 5px 0; /* Add some default margin */
+  box-sizing: border-box; /* Include padding and border in element's total width and height */
+}
+
+input[type="text"]:focus,
+input[type="email"]:focus,
+input[type="password"]:focus,
+input[type="search"]:focus,
+input[type="url"]:focus,
+input[type="tel"]:focus,
+input[type="number"]:focus,
+textarea:focus,
+select:focus {
+  border-color: #87CEEB; /* Highlight with link color */
+  outline: none; /* Remove default browser outline */
+  box-shadow: 0 0 0 2px rgba(135, 206, 235, 0.3); /* Subtle glow */
+}
+
+/* Force File selector button styling */
+.app-container input[type="file"]::file-selector-button,
+input[type="file"]::-webkit-file-upload-button {
+  background-color: #555555 !important;
+  color: #DDDDDD !important;
+  border: 1px solid #777777 !important;
+}
+
+/* Force placeholder color */
+input::placeholder {
+  color: #AAAAAA !important;
+}
+
+label {
+  margin-bottom: 5px;
+  display: inline-block;
+  font-weight: bold;
+}
+
+/* Adjust CreateWorkspaceForm specific styling */
+.sidebar form div {
+  margin-bottom: 10px;
+}
+
+.sidebar form label {
+  margin-right: 5px; /* RTL adjustment */
+}
+
+.sidebar form input[type="text"] {
+  width: calc(100% - 2em); /* Adjust width considering padding/border */
+}
+
+.sidebar form button {
+  width: 100%;
+}
+
+/* Navigation styles */
+.nav-list {
+  list-style: none;
+  padding: 0;
+  margin: 15px 0;
+}
+
+.nav-item {
+  margin-bottom: 15px;
+  padding: 8px 0;
+  border-bottom: 1px solid #555555;
+}
+
+.nav-item a {
+  display: block;
+  color: #DDDDDD;
+  text-decoration: none;
+  font-weight: 500;
+  transition: color 0.2s;
+}
+
+.nav-item a:hover {
+  color: #87CEEB;
+}
+
+/* Make sure all h3 headings in the sidebar have correct color */
+.sidebar h3 {
+  color: #EEEEEE;
+  border-bottom: 1px solid #666666;
+  padding-bottom: 10px;
+  margin-top: 0;
+}
+
+/* === Chat Page Styles === */
+.chat-page {
+  padding: 20px;
+  margin-bottom: 20px;
+}
+
+.workspace-selector-container {
+  margin-bottom: 20px;
+  max-width: 400px;
+}
+
+.chat-container {
+  margin-top: 20px;
+  padding: 20px;
+  background-color: #3a3a3a;
+  border-radius: 8px;
+  min-height: 300px;
+  border: 1px solid #555555;
+}
+
+.chat-messages {
+  margin-top: 20px;
+  padding: 15px;
+  background-color: #444444;
+  border-radius: 8px;
+  border: 1px solid #555555;
+  min-height: 200px;
+}
+
+.placeholder-text {
+  color: #AAAAAA;
+  text-align: center;
+}
+
+.chat-input-container {
+  margin-top: 20px;
+  display: flex;
+}
+
+.chat-input {
+  flex-grow: 1;
+  padding: 10px;
+  border-radius: 4px;
+  border: 1px solid #555555;
+  margin-right: 10px;
+  background-color: #555555;
+  color: #DDDDDD;
+}
+
+.send-button {
+  padding: 10px 15px;
+  background-color: #4a7a4c;
+  color: #DDDDDD;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0.7;
+}
+
+.send-button:not(:disabled):hover {
+  opacity: 1;
+  background-color: #5a8a5c;
+}
+
+/* === Workspace Management Page Styles === */
+.workspace-management-page {
+  padding: 20px;
+}
+
+.form-section {
+  margin-bottom: 30px;
+}
+
+.list-section {
+  margin-bottom: 30px;
+}
+
+/* === Form Styles === */
+.create-workspace-form {
+  border: 1px solid #555555;
+  padding: 15px;
+  margin-top: 15px;
+  margin-bottom: 15px;
+  border-radius: 5px;
+  background-color: #444444;
+}
+
+.form-group {
+  margin-bottom: 15px;
+}
+
+.form-group label {
+  display: block;
+  margin-bottom: 5px;
+  font-weight: bold;
+}
+
+.workspace-input {
+  width: 100%;
+  padding: 8px;
+  border-radius: 4px;
+  border: 1px solid #555555;
+  background-color: #555555;
+  color: #DDDDDD;
+}
+
+.submit-button {
+  margin-top: 10px;
+  padding: 8px 16px;
+  background-color: #4a7a4c; /* A muted green */
+  color: #DDDDDD;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.submit-button:hover:not(:disabled) {
+  background-color: #5a8a5c;
+}
+
+/* === Workspace Selector Styles === */
+.workspace-selector {
+  margin-bottom: 15px;
+}
+
+.selector-label {
+  display: block;
+  margin-bottom: 5px;
+  font-weight: bold;
+}
+
+.workspace-select {
+  width: 100%;
+  padding: 8px;
+  border-radius: 4px;
+  border: 1px solid #555555;
+  background-color: #555555;
+  color: #DDDDDD;
+}
+
+/* === File Upload Styles === */
+.file-input {
+  display: block;
+  margin-top: 10px;
+  margin-bottom: 10px;
+  padding: 8px;
+  width: 100%;
+  box-sizing: border-box;
+  background-color: #555555;
+  color: #DDDDDD;
+  border: 1px solid #555555;
+}
+
+/* === Auth Section Styles === */
+.auth-section {
+  margin-top: auto; /* Push to the bottom of the sidebar */
+  padding-top: 20px;
+  border-top: 1px solid #555555;
+  text-align: center;
+}
+
+.user-info {
+  margin-bottom: 10px;
+  font-size: 0.9em;
+  color: #BBBBBB;
+  word-wrap: break-word; /* Prevent long emails/names from overflowing */
+}
+
+.auth-button {
+  width: 100%;
+  padding: 10px 15px;
+  font-size: 1em;
+  border-radius: 5px;
+  cursor: pointer;
+  border: none;
+  transition: background-color 0.2s, opacity 0.2s;
+}
+
+.login-button {
+  background-color: #4285F4; /* Google Blue */
+  color: #FFFFFF;
+}
+
+.login-button:hover {
+  background-color: #357ae8;
+}
+
+.logout-button {
+  background-color: #dc3545; /* Red */
+  color: #FFFFFF;
+}
+
+.logout-button:hover {
+  background-color: #c82333;
+}
+
+/* File Input Container */
+.file-input-container {
+  margin-bottom: 20px;
+}
+
+.file-types-info {
+  font-size: 0.9rem;
+  color: #aaa;
+  margin-bottom: 5px;
+}
+
+/* Upload Results */
+.upload-results {
+  margin-top: 20px;
+  padding: 15px;
+  background-color: #3a3a3a;
+  border-radius: 5px;
+  border: 1px solid #555;
+}
+
+.upload-results h3 {
+  margin-top: 0;
+  margin-bottom: 10px;
+  font-size: 1.1rem;
+}
+
+.results-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.result-item {
+  padding: 8px 12px;
+  margin-bottom: 6px;
+  border-radius: 4px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-left: 4px solid;
+}
+
+.result-item.success {
+  background-color: rgba(75, 181, 67, 0.15);
+  border-color: #4BB543;
+}
+
+.result-item.error {
+  background-color: rgba(255, 82, 82, 0.15);
+  border-color: #FF5252;
+}
+
+.result-item .filename {
+  font-weight: bold;
+  max-width: 50%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.result-item .message {
+  flex-grow: 1;
+  text-align: right;
+  padding-left: 10px;
+}
+
+/* File input styling */
+input[type="file"].file-input {
+  width: 100%;
+  padding: 10px;
+  background-color: #444;
+  border: 1px solid #555;
+  border-radius: 4px;
+  color: #ddd;
+  font-size: 0.9rem;
+}
+
+input[type="file"].file-input:hover:not(:disabled) {
+  border-color: #777;
+}
+
+input[type="file"].file-input:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}

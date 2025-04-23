@@ -1,0 +1,80 @@
+:root {
+  font-family: system-ui, Avenir, Helvetica, Arial, sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+
+  /* Define a base dark theme */
+  color: #DDDDDD; /* Light gray text */
+  background-color: #333333; /* Dark gray background */
+
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+a {
+  font-weight: 500;
+  color: #87CEEB; /* Sky blue links */
+  text-decoration: inherit;
+}
+a:hover {
+  color: #ADD8E6; /* Lighter blue on hover */
+}
+
+body {
+  margin: 0;
+  /* display: flex; */ /* Remove flex centering if layout is handled by App.jsx */
+  /* place-items: center; */ /* Remove flex centering */
+  min-width: 320px;
+  min-height: 100vh;
+  background-color: var(--background-color, #333333); /* Use root background */
+  color: var(--text-color, #1b1414); /* Use root text color */
+} 
+
+h1 {
+  font-size: 2.5em; /* Slightly smaller h1 */
+  line-height: 1.1;
+  color: #EEEEEE; /* Slightly brighter for headings */
+}
+
+h2, h3 {
+ color: #EEEEEE; /* Slightly brighter for headings */
+}
+
+button {
+  border-radius: 8px;
+  border: 1px solid transparent;
+  padding: 0.6em 1.2em;
+  font-size: 1em;
+  font-weight: 500;
+  font-family: inherit;
+  background-color: #555555; /* Medium gray button */
+  color: #DDDDDD; /* Light gray text on button */
+  cursor: pointer;
+  transition: border-color 0.25s, background-color 0.25s;
+}
+button:hover {
+  border-color: #87CEEB; /* Sky blue border on hover */
+  background-color: #666666; /* Slightly lighter gray on hover */
+}
+button:focus,
+button:focus-visible {
+  outline: 4px auto -webkit-focus-ring-color; /* Keep default focus outline */
+}
+
+/* Remove the light mode styles */
+/*
+@media (prefers-color-scheme: light) {
+  :root {
+    color: #213547;
+    background-color: #ffffff;
+  }
+  a:hover {
+    color: #747bff;
+  }
+  button {
+    background-color: #f9f9f9;
+  }
+}
+*/

@@ -1,0 +1,158 @@
+/* Reset CSS to ensure browser consistency and override browser defaults */
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  color-scheme: dark !important; /* Force dark mode */
+  color: #DDDDDD !important;
+  background-color: #333333 !important;
+}
+
+html {
+  background-color: #333333 !important;
+}
+
+body {
+  height: 100%;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  background-color: #333333 !important;
+  color: #DDDDDD !important;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+#root {
+  height: 100%;
+  width: 100%;
+  display: flex;
+  max-width: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  background-color: #333333 !important;
+}
+
+/* Target specific elements directly */
+input, 
+select, 
+textarea, 
+button {
+  background-color: #555555 !important;
+  color: #DDDDDD !important;
+  border: 1px solid #777777 !important;
+  font-family: inherit !important;
+}
+
+/* Target by attribute */
+[type="text"],
+[type="password"],
+[type="email"],
+[type="tel"],
+[type="number"],
+[type="url"],
+[type="search"],
+[type="file"],
+[type="button"],
+[type="reset"],
+[type="submit"] {
+  background-color: #555555 !important;
+  color: #DDDDDD !important;
+  border: 1px solid #777777 !important;
+}
+
+/* Extreme specificity for form controls */
+html body div#root div.app-container main.main-content input,
+html body div#root div.app-container main.main-content select,
+html body div#root div.app-container main.main-content button,
+html body div#root div.app-container aside.sidebar input,
+html body div#root div.app-container aside.sidebar select,
+html body div#root div.app-container aside.sidebar button {
+  background-color: #555555 !important;
+  color: #DDDDDD !important;
+  border: 1px solid #777777 !important;
+}
+
+/* Even more aggressive targeting for navbar */
+nav, 
+.nav, 
+.navbar, 
+.navigation,
+[role="navigation"] {
+  background-color: #444444 !important;
+  color: #DDDDDD !important;
+}
+
+/* Target all divs and backgrounds to handle random containers */
+div {
+  background-color: transparent !important;
+}
+
+.app-container {
+  background-color: #333333 !important;
+  color: #DDDDDD !important;
+}
+
+.main-content {
+  background-color: #333333 !important;
+  color: #DDDDDD !important;
+}
+
+.sidebar {
+  background-color: #444444 !important;
+  color: #DDDDDD !important;
+}
+
+/* Force styling for file input buttons */
+input[type="file"]::file-selector-button,
+input[type="file"]::-webkit-file-upload-button,
+::-webkit-file-upload-button,
+::file-selector-button {
+  background-color: #555555 !important;
+  color: #DDDDDD !important;
+  border: 1px solid #777777 !important;
+  font-family: inherit !important;
+}
+
+/* Fix placeholder text color */
+::placeholder {
+  color: #AAAAAA !important;
+  opacity: 1 !important;
+}
+
+/* Resets for system UI controls like dropdowns */
+select {
+  appearance: none !important;
+  -webkit-appearance: none !important;
+  -moz-appearance: none !important;
+  background-image: url("data:image/svg+xml;utf8,<svg fill='%23DDDDDD' height='24' viewBox='0 0 24 24' width='24' xmlns='http://www.w3.org/2000/svg'><path d='M7 10l5 5 5-5z'/><path d='M0 0h24v24H0z' fill='none'/></svg>") !important;
+  background-repeat: no-repeat !important;
+  background-position: right 8px center !important;
+  padding-right: 30px !important;
+}
+
+/* Override plain white backgrounds */
+.workspace-item,
+.upload-section,
+.app-container div {
+  background-color: transparent !important;
+}
+
+/* Target specific elements we've seen in screenshots */
+.upload-section {
+  background-color: #3a3a3a !important;
+  border: 1px solid #555555 !important;
+}
+
+input[type="file"] {
+  color: #AAAAAA !important;
+}
+
+/* Additional overrides for embedded iframes or shadow DOM elements */
+iframe, 
+embed,
+object {
+  background-color: #333333 !important;
+} 

@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard] # For running the server
+pydantic
+python-dotenv     # To load .env file for local development
+psycopg2-binary   # Postgres driver (sync version for simplicity first)
+google-cloud-storage
+python-multipart
+firebase-admin
+# Or use asyncpg for async operations later:
+# asyncpg
+# databases[postgresql] # Async database toolkit (optional but nice with asyncpg)
