@@ -1,5 +1,6 @@
 // frontend/src/services/uploadService.js
 import axios from 'axios';
+import { auth } from '../firebaseConfig'; // <-- Import auth
 
 const API_URL = '/api'; // Using proxy
 
@@ -50,10 +51,28 @@ const uploadFilesDirectly = async (files, workspaceId, onUploadProgress) => {
   
   formData.append('workspace_id_str', workspaceId); // Send workspace_id as form data
 
+  // --- Explicitly get token and set header --- 
+  let authToken = null;
+  const user = auth.currentUser;
+  if (user) {
+    try {
+      authToken = await user.getIdToken(true); // Get fresh token
+    } catch (tokenError) {
+      console.error('Error getting auth token for upload:', tokenError);
+      throw new Error('Could not get authentication token.'); // Fail early
+    }
+  }
+
+  if (!authToken) {
+    throw new Error('User not authenticated.'); // Should not happen if user is logged in
+  }
+  // --- End explicit token handling ---
+
   try {
     const response = await axios.post(`${API_URL}/uploads/direct`, formData, {
       headers: {
         'Content-Type': 'multipart/form-data', // Important for file uploads
+        'Authorization': `Bearer ${authToken}`,
       },
       onUploadProgress: progressEvent => {
         // Calculate percentage

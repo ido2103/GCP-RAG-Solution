@@ -78,7 +78,9 @@ body {
 
 /* Sidebar */
 .sidebar {
-  width: 250px;
+  width: 280px; /* Increase width slightly */
+  min-width: 280px; /* Prevent shrinking */
+  flex-shrink: 0; /* Explicitly prevent shrinking */
   border-left: 1px solid #555555;
   padding: 20px;
   background-color: #444444;
@@ -86,6 +88,8 @@ body {
   box-sizing: border-box;
   color: #DDDDDD;
   overflow-y: auto;
+  display: flex; /* Use flexbox for internal layout */
+  flex-direction: column; /* Stack items vertically */
 }
 
 .sidebar h2 {
@@ -298,66 +302,188 @@ label {
 
 /* === Chat Page Styles === */
 .chat-page {
-  padding: 20px;
-  margin-bottom: 20px;
+  display: flex;
+  flex-direction: column; /* Stack elements vertically */
+  height: 100vh; /* Full viewport height */
+  width: 100%;
+  background-color: #333333;
+  color: #DDDDDD;
+  direction: rtl; /* Ensure RTL */
 }
 
 .workspace-selector-container {
-  margin-bottom: 20px;
-  max-width: 400px;
+  padding: 15px 20px;
+  border-bottom: 1px solid #555;
+  background-color: #444; /* Slightly different background */
+  flex-shrink: 0; /* Prevent selector from shrinking */
+  direction: rtl; /* Ensure RTL */
+  text-align: right; /* Align content right */
 }
 
 .chat-container {
-  margin-top: 20px;
+  flex-grow: 1; /* Allow chat to take remaining space */
+  display: flex;
+  flex-direction: column;
   padding: 20px;
-  background-color: #3a3a3a;
-  border-radius: 8px;
-  min-height: 300px;
-  border: 1px solid #555555;
+  overflow: hidden; /* Prevent overall container overflow */
+  direction: rtl; /* Ensure RTL */
+}
+
+.chat-container h2 {
+  margin-top: 0;
+  margin-bottom: 15px;
+  text-align: right; /* Align title */
+}
+
+.chat-container > p:first-of-type {
+  margin-bottom: 15px;
+  text-align: right;
 }
 
 .chat-messages {
-  margin-top: 20px;
-  padding: 15px;
-  background-color: #444444;
-  border-radius: 8px;
-  border: 1px solid #555555;
-  min-height: 200px;
+  flex-grow: 1; /* Allow messages to take space */
+  overflow-y: auto; /* Enable scrolling for messages */
+  margin-bottom: 15px;
+  padding-right: 10px; /* Padding for scrollbar */
+  display: flex;
+  flex-direction: column; /* Stack messages vertically */
+  gap: 15px; /* Space between messages */
+}
+
+.message {
+  padding: 10px 15px;
+  border-radius: 15px;
+  max-width: 75%;
+  word-wrap: break-word; /* Break long words */
+  position: relative; /* For pseudo-elements like sender labels */
+  border: 1px solid #666666; /* Add a border around messages */
+  box-shadow: 1px 1px 3px rgba(0, 0, 0, 0.2); /* Add subtle shadow */
+}
+
+.message.user-message {
+  background-color: #4A90E2; /* Brighter blue for user */
+  color: #FFFFFF;
+  border-bottom-right-radius: 5px; /* Slightly flat corner */
+  align-self: flex-end; /* Align user messages to the right */
+  margin-right: 5px; /* Ensure space from edge */
+  text-align: right; /* Align text right */
+}
+
+.message.ai-message {
+  background-color: #555555; /* Grey for AI */
+  color: #DDDDDD;
+  border-bottom-left-radius: 5px; /* Slightly flat corner */
+  align-self: flex-start; /* Align AI messages to the left */
+  margin-left: 5px; /* Ensure space from edge */
+  text-align: right; /* Align text right */
+  border-color: #777777; /* Slightly different border for AI */
+}
+
+/* Add sender labels using pseudo-elements */
+.message.user-message::before {
+  content: "You:";
+  font-weight: bold;
+  display: block;
+  margin-bottom: 4px;
+  font-size: 0.85em;
+  color: rgba(255, 255, 255, 0.8);
+  text-align: right;
+}
+
+.message.ai-message::before {
+  content: "AI:";
+  font-weight: bold;
+  display: block;
+  margin-bottom: 4px;
+  font-size: 0.85em;
+  color: rgba(221, 221, 221, 0.8);
+  text-align: right;
+}
+
+.message-content {
+  /* Content styling if needed */
+}
+
+.message-meta {
+  font-size: 0.75em;
+  color: rgba(221, 221, 221, 0.7);
+  margin-top: 5px;
+  text-align: left; /* Align timestamp left in RTL */
+}
+
+.message.ai-message .message-meta {
+   color: rgba(221, 221, 221, 0.7); 
+}
+
+.message.user-message .message-meta {
+  color: rgba(255, 255, 255, 0.7);
+  text-align: left; /* Align timestamp left in RTL */
+}
+
+.message.error-message {
+  background-color: #7c3131; /* Dark red for error message */
+  color: #fddddd;
+  align-self: flex-start; /* Keep errors aligned left */
+}
+
+.message.error-message::before {
+  content: "Error:";
+  color: #fddddd;
+}
+
+.loading-indicator {
+  font-style: italic;
+  color: #aaaaaa;
+}
+
+.message.ai-message.loading {
+  background-color: transparent;
+  padding: 5px 0;
+  align-self: flex-start;
+}
+.message.ai-message.loading::before {
+  display: none; /* Hide AI label for loading indicator */
 }
 
 .placeholder-text {
-  color: #AAAAAA;
+  color: #999999;
   text-align: center;
+  margin-top: 20px;
+  font-style: italic;
 }
 
 .chat-input-container {
-  margin-top: 20px;
   display: flex;
+  gap: 10px; /* Space between input and button */
+  padding-top: 15px;
+  border-top: 1px solid #555;
+  flex-shrink: 0; /* Prevent input area from shrinking */
+  direction: rtl; /* Ensure RTL */
 }
 
 .chat-input {
-  flex-grow: 1;
-  padding: 10px;
-  border-radius: 4px;
-  border: 1px solid #555555;
-  margin-right: 10px;
-  background-color: #555555;
-  color: #DDDDDD;
+  flex-grow: 1; /* Input takes most space */
+  resize: none; /* Disable textarea resizing if using textarea */
+  margin: 0 !important; /* Override default margin */
 }
 
 .send-button {
-  padding: 10px 15px;
-  background-color: #4a7a4c;
-  color: #DDDDDD;
-  border: none;
-  border-radius: 4px;
+  white-space: nowrap; /* Prevent button text wrapping */
+  background-color: #4A90E2 !important; /* Blue button */
+  color: #FFFFFF !important;
+  border: none !important;
   cursor: pointer;
-  opacity: 0.7;
+  transition: background-color 0.2s ease;
+  margin: 0 !important; /* Override default margin */
+}
+
+.send-button:disabled {
+  background-color: #555555 !important;
+  cursor: not-allowed;
 }
 
 .send-button:not(:disabled):hover {
-  opacity: 1;
-  background-color: #5a8a5c;
+  background-color: #357ABD !important; /* Darker blue on hover */
 }
 
 /* === Workspace Management Page Styles === */
@@ -451,7 +577,8 @@ label {
 
 /* === Auth Section Styles === */
 .auth-section {
-  margin-top: auto; /* Push to the bottom of the sidebar */
+  flex-shrink: 0; /* Prevent auth section from shrinking */
+  margin-top: auto; /* Push to bottom */
   padding-top: 20px;
   border-top: 1px solid #555555;
   text-align: center;
@@ -578,4 +705,9 @@ input[type="file"].file-input:hover:not(:disabled) {
 input[type="file"].file-input:disabled {
   opacity: 0.6;
   cursor: not-allowed;
+}
+
+/* Adjust navigation list to not take all space */
+.sidebar .nav-list {
+  flex-grow: 1; /* Allow nav list to grow */
 }

@@ -160,7 +160,7 @@ frontend/.vite/
 
 # Firebase Service Account Key (NEVER commit this!)
 firebase-service-account.json
-
+package-lock.json
 
 # OS generated files
 .DS_Store
@@ -176,3 +176,6 @@ Thumbs.db
 *.iml
 *.ipr
 *.iws
+
+processing/${defaults.local_processing_base}/
+local_uploads/

@@ -1,0 +1,76 @@
+name: rag-processing-pipeline
+description: "RAG document processing pipeline: extract, chunk, embed, store"
+
+# Default parameters for the entire workflow
+defaults:
+  workspace_id: null  # Must be provided when running the workflow
+  chunking_method: "recursive"
+  chunk_size: 1000
+  chunk_overlap: 200
+  embedding_model: "text-multilingual-embedding-002" # GCP default
+  batch_size: 250 # Suitable for Vertex AI
+  db_table_prefix: ""
+  local_processing_base: "./local_processing_output" # Base dir for local outputs
+
+# Input configurations (can be overridden by CLI)
+input:
+  type: "gcs"  # Options: gcs, local_file, local_dir
+  bucket_name: null  # For GCS
+  object_name: null  # For GCS
+  file_path: null    # For local_file
+  directory_path: null  # For local_dir
+  recursive: true    # For local_dir
+
+# Intermediate/Persistent file locations
+# When LOCAL_DEV=true, these become persistent outputs.
+# When LOCAL_DEV=false, these are temporary unless cleanup.remove_temp_files=false
+persistent_outputs: # Renamed from temp_files for clarity
+  extracted_documents: "${defaults.local_processing_base}/${defaults.workspace_id}/extracted_docs.json"
+  chunked_documents: "${defaults.local_processing_base}/${defaults.workspace_id}/chunked_docs.json"
+  embedded_documents: "${defaults.local_processing_base}/${defaults.workspace_id}/embedded_docs.json"
+
+# Steps in the pipeline
+steps:
+  - name: "extract_text"
+    module: "extract_text.main"
+    # Function determined dynamically in main.py based on input.type
+    enabled: true
+    output: "${persistent_outputs.extracted_documents}"
+
+  - name: "chunk_text"
+    module: "chunk_text.main"
+    function: "chunk_documents"
+    enabled: true
+    input: "${persistent_outputs.extracted_documents}"
+    output: "${persistent_outputs.chunked_documents}"
+    params:
+      chunking_method: "${defaults.chunking_method}"
+      chunk_size: "${defaults.chunk_size}"
+      chunk_overlap: "${defaults.chunk_overlap}"
+
+  - name: "embed_text"
+    module: "embed_text.main"
+    function: "embed_documents"
+    enabled: true
+    input: "${persistent_outputs.chunked_documents}"
+    output: "${persistent_outputs.embedded_documents}"
+    params:
+      model_name: "${defaults.embedding_model}"
+      batch_size: "${defaults.batch_size}"
+
+  - name: "store_data"
+    module: "store_data.main"
+    function: "store_embedded_documents"
+    enabled: true
+    input: "${persistent_outputs.embedded_documents}"
+    params:
+      workspace_id: "${defaults.workspace_id}"
+      table_prefix: "${defaults.db_table_prefix}"
+      # connection_string is passed explicitly by main.py
+
+# Cleanup configuration
+cleanup:
+  # Default is now determined by LOCAL_DEV flag in main.py
+  # Set remove_temp_files: true here to FORCE removal even in local dev
+  # Set remove_temp_files: false here to PREVENT removal even in cloud
+  remove_temp_files: null # Let main.py decide based on LOCAL_DEV

@@ -5,22 +5,56 @@ import logging
 import os
 import uuid
 from contextlib import contextmanager
-from typing import List, Dict
+from typing import List, Dict, Optional, Any
 import datetime
 import mimetypes
+import sys # Added for path manipulation
+import subprocess # Added for local processing trigger
+import shutil # Added for local file saving
+from dotenv import load_dotenv # Added for .env loading
+
+# --- Load Environment Variables FIRST ---
+# Construct the path to the root .env file (assuming backend is one level down)
+_DOTENV_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '.env'))
+if os.path.exists(_DOTENV_PATH):
+    load_dotenv(dotenv_path=_DOTENV_PATH)
+    print(f"Loaded environment variables from: {_DOTENV_PATH}")
+else:
+    print(f"Warning: Root .env file not found at {_DOTENV_PATH}")
+ 
+# Determine execution mode
+IS_LOCAL_DEV = os.getenv("LOCAL_DEV", "false").lower() == "true"
+print(f"--- Running in LOCAL_DEV mode: {IS_LOCAL_DEV} ---")
 
 # --- FastAPI Imports ---
 from fastapi import FastAPI, Depends, HTTPException, status, Path, Query, File, UploadFile, Form, Body
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-
+from fastapi.responses import StreamingResponse
+import asyncio # Import asyncio for the stream generator
+ 
 # --- Database Imports ---
 import psycopg2
 import psycopg2.extras  # Added for execute_batch and other utilities
 from psycopg2 import pool # Although pool is used in db.py, importing here can be useful for type hinting if needed
-
+ 
 # --- Google Cloud Imports ---
-from google.cloud import storage
-from google.api_core import exceptions as google_exceptions
+
+# --- Configuration Loading ---
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+# Conditionally import storage client
+if not IS_LOCAL_DEV:
+    try:
+        from google.cloud import storage
+        from google.api_core import exceptions as google_exceptions
+    except ImportError:
+        storage = None # Set to None if not installed or not needed
+        google_exceptions = None
+        print("Note: google-cloud-storage not imported (or not installed). GCS features disabled.")
+else:
+    storage = None # Not needed for local dev
+    google_exceptions = None
 
 # --- Local Application Imports ---
 from app import models, db # Your local models and db connection utility
@@ -29,25 +63,54 @@ from app import models, db # Your local models and db connection utility
 import firebase_admin
 from firebase_admin import credentials, auth
 
-# --- Configuration Loading ---
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+# --- Processing Pipeline Imports ---
+# Add processing directory to sys.path to allow imports
+_PROCESSING_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'processing'))
+_PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 
-# Load required environment variables, raising an error if missing
-GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME")
-if not GCS_BUCKET_NAME:
-    logger.error("FATAL: Missing required environment variable: GCS_BUCKET_NAME")
-    raise ValueError("Missing required environment variable: GCS_BUCKET_NAME")
+# Add project root to allow imports like `from processing.query.main`
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+    logger.info(f"Added project root to sys.path: {_PROJECT_ROOT}")
 
-GCP_PROJECT_ID = os.getenv("GCP_PROJECT_ID") # Optional: Load Project ID if needed elsewhere
-GCP_REGION = os.getenv("GCP_REGION")         # Optional: Load Region if needed elsewhere
+try:
+    # Corrected import path relative to project root
+    from processing.query.main import process_query, process_query_stream 
+    logger.info("Successfully imported process_query and process_query_stream from processing.query.main")
+except ImportError as e:
+    logger.error(f"Could not import process_query or process_query_stream: {e}. Query endpoint will likely fail.", exc_info=True)
+    process_query = None # Define as None if import fails
+    process_query_stream = None
+except ModuleNotFoundError as e:
+     logger.error(f"Could not find processing module: {e}. Ensure structure is correct and processing is in PYTHONPATH.", exc_info=True)
+     process_query = None
+     process_query_stream = None
 
-logger.info(f"Backend configured with GCS_BUCKET_NAME: {GCS_BUCKET_NAME}")
+
+# --- Load GCS/GCP Config (Only if not in local dev mode) ---
+GCS_BUCKET_NAME = None
+GCP_PROJECT_ID = os.getenv("GCP_PROJECT_ID")
+GCP_REGION = os.getenv("GCP_REGION")
+
+if not IS_LOCAL_DEV:
+    GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME")
+    if not GCS_BUCKET_NAME:
+        logger.warning("GCS_BUCKET_NAME environment variable is not set. GCS uploads will fail.")
+    else:
+         logger.info(f"Backend configured with GCS_BUCKET_NAME: {GCS_BUCKET_NAME}")
+else:
+     logger.info("Running in LOCAL_DEV mode. GCS uploads disabled.")
+
 if GCP_PROJECT_ID:
     logger.info(f"GCP Project ID: {GCP_PROJECT_ID}")
 if GCP_REGION:
     logger.info(f"GCP Region: {GCP_REGION}")
 
+# Define Local Storage Path (used only if IS_LOCAL_DEV is True)
+LOCAL_STORAGE_PATH = os.getenv("LOCAL_STORAGE_PATH", os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'local_uploads')))
+if IS_LOCAL_DEV:
+    logger.info(f"Local file storage path: {LOCAL_STORAGE_PATH}")
+    os.makedirs(LOCAL_STORAGE_PATH, exist_ok=True)
 
 # --- FastAPI App Initialization ---
 app = FastAPI(
@@ -56,19 +119,28 @@ app = FastAPI(
     version="0.1.0"
 )
 
+# --- Database Initialization (Crucial - after env load) ---
+try:
+    db.init_db_pool() # Initialize the pool using loaded env vars and IS_LOCAL_DEV flag
+except ValueError as e:
+     logger.error(f"FATAL: Database configuration error: {e}. Application might not function correctly.")
+     # Decide if you want to exit or let it fail later
+except Exception as e:
+    logger.error(f"FATAL: Failed to initialize database pool: {e}", exc_info=True)
+    # Decide if you want to exit
 
 # --- Dependencies ---
 
 # Database Session Dependency
 @contextmanager
 def get_db_session():
-    """Provides a database session within a context manager, handling commit/rollback."""
+    """Provides a database session from the pool within a context manager."""
     conn = None
     try:
-        conn = db.get_db_connection()
+        conn = db.get_db_connection() # Get connection from initialized pool
         yield conn
-        conn.commit() # Commit transaction if no exceptions occurred within the 'with' block
-    except (Exception, psycopg2.Error) as error: # Catch generic exceptions and psycopg2 errors
+        conn.commit()
+    except (Exception, psycopg2.Error) as error:
         logger.error(f"Database error occurred: {error}", exc_info=True)
         if conn:
             try:
@@ -76,31 +148,32 @@ def get_db_session():
                 logger.info("Transaction rolled back due to error.")
             except Exception as rollback_err:
                 logger.error(f"Error during rollback: {rollback_err}", exc_info=True)
-
-        # Re-raise specific HTTPExceptions passed up, otherwise raise a generic 500
         if isinstance(error, HTTPException):
              raise error
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Database operation failed")
     finally:
         if conn:
-            db.release_db_connection(conn) # Ensure connection is always released
+            db.release_db_connection(conn)
 
-# Google Cloud Storage Client Dependency
+# Google Cloud Storage Client Dependency (Conditional)
 _gcs_client = None
 def get_gcs_client():
-    """Dependency function to get a GCS client instance (singleton pattern)."""
+    """Dependency function to get a GCS client instance (singleton pattern). Returns None if in local dev."""
+    if IS_LOCAL_DEV:
+        return None # No GCS client needed/used in local dev
+        
     global _gcs_client
     if _gcs_client is None:
+        if storage is None:
+             logger.error("Attempted to get GCS client, but google-cloud-storage is not available.")
+             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                                 detail="Cloud Storage client not available.")
         try:
             logger.info("Initializing Google Cloud Storage client...")
-            # ADC will be used automatically if GOOGLE_APPLICATION_CREDENTIALS is not set
-            # and gcloud auth application-default login has been run.
-            # On Cloud Run, the service account is used automatically.
-            _gcs_client = storage.Client(project=GCP_PROJECT_ID) # Explicitly pass project_id if available/set
+            _gcs_client = storage.Client(project=GCP_PROJECT_ID)
             logger.info("Google Cloud Storage client initialized successfully.")
         except Exception as e:
             logger.error(f"Failed to initialize Google Cloud Storage client: {e}", exc_info=True)
-            # Raise HTTPException here so FastAPI handles it correctly during dependency resolution
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                                 detail="Could not connect to Cloud Storage service.")
     return _gcs_client
@@ -108,16 +181,24 @@ def get_gcs_client():
 # Initialize Firebase Admin SDK
 # Check if Firebase app is already initialized to avoid multiple initializations
 if not firebase_admin._apps:
-    # For local development, use a service account key file
-    # In production, this should use environment variables or Google Cloud service account
+    firebase_cred_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "./firebase-service-account.json") # Use env var or default path
     try:
-        firebase_cred = credentials.Certificate("./firebase-service-account.json")
-        firebase_admin.initialize_app(firebase_cred)
-        logger.info("Firebase Admin SDK initialized with service account")
+        if os.path.exists(firebase_cred_path):
+            firebase_cred = credentials.Certificate(firebase_cred_path)
+            firebase_admin.initialize_app(firebase_cred)
+            logger.info(f"Firebase Admin SDK initialized with service account: {firebase_cred_path}")
+        else:
+             logger.warning(f"Firebase service account key not found at {firebase_cred_path}. Trying default credentials.")
+             firebase_admin.initialize_app()
+             logger.info("Firebase Admin SDK initialized with default credentials (ADC or environment). Potential permission issues if ADC isn't set correctly.")
     except Exception as e:
-        # Fallback to application default credentials
-        firebase_admin.initialize_app()
-        logger.warning(f"Firebase Admin SDK initialized with default credentials: {e}")
+         logger.warning(f"Failed to initialize Firebase with explicit credentials at {firebase_cred_path}: {e}. Falling back to default credentials.")
+         try:
+             firebase_admin.initialize_app()
+             logger.info("Firebase Admin SDK initialized with default credentials (ADC or environment). Potential permission issues if ADC isn't set correctly.")
+         except Exception as default_e:
+              logger.error(f"FATAL: Failed to initialize Firebase Admin SDK with both explicit and default credentials: {default_e}")
+              # Depending on criticality, you might raise an error here to stop startup
 
 # Create a reusable bearer token auth dependency
 security = HTTPBearer()
@@ -125,67 +206,83 @@ security = HTTPBearer()
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
     """Verify Firebase ID token and return user details including custom claims."""
     token = credentials.credentials
+    logger.info(f"Attempting to verify token: {token[:10]}...") # Log start and part of token
     try:
-        # Verify the Firebase token with a 10-second clock skew tolerance
         decoded_token = auth.verify_id_token(token, clock_skew_seconds=10)
-        
-        # Extract standard user info
         user_id = decoded_token['uid']
         email = decoded_token.get('email')
-        
-        # Extract custom claims (if they exist)
-        # Firebase Admin SDK typically makes custom claims available directly
         role = decoded_token.get('role')
-        groups = decoded_token.get('groups', []) # Default to empty list if not present
-        
-        # Ensure groups is a list
-        if not isinstance(groups, list):
-            logger.warning(f"User {user_id} has non-list 'groups' claim: {groups}. Defaulting to empty list.")
-            groups = []
-            
-        logger.info(f"Authenticated user: {user_id}, Email: {email}, Role: {role}, Groups: {groups}")
-        
-        # Return the user model populated with claims
+        groups = decoded_token.get('groups', [])
+        logger.info(f"Token verified successfully for user: {user_id}, Role: {role}") # Log success
         return models.User(user_id=user_id, email=email, role=role, groups=groups)
-        
     except Exception as e:
-        logger.error(f"Authentication error: {e}")
+        logger.error(f"Token verification failed: {e}", exc_info=True) # Log the specific error
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid authentication credentials",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-
 # --- Application Lifespan Events ---
 @app.on_event("startup")
 async def startup_event():
     """Tasks to run when the application starts."""
-    logger.info("Application startup: Initializing resources...")
-    # Check DB pool availability
-    try:
-        conn = db.get_db_connection()
-        db.release_db_connection(conn)
-        logger.info("Database connection pool seems available.")
-    except Exception as e:
-        logger.error(f"Failed to get initial DB connection from pool during startup: {e}", exc_info=True)
-        # Decide if failure here should prevent startup - maybe raise the exception?
+    logger.info("Application startup: Verifying resources...")
+    # Database pool check is implicitly done by init_db_pool() earlier
+    if db.db_pool is None:
+         logger.error("Database pool failed to initialize during startup!")
+         # Potentially raise error to prevent startup
+    else:
+         logger.info("Database pool initialized.")
 
-    # Initialize GCS client on startup (optional but good for early failure detection)
-    try:
-         get_gcs_client()
-         logger.info("Attempted GCS client initialization during startup.")
-    except Exception as e:
-         # Log the error, but maybe don't prevent startup? Depending on requirements.
-         logger.error(f"Failed to initialize GCS client during startup: {e}", exc_info=True)
+    # GCS client check (only if not local dev)
+    if not IS_LOCAL_DEV:
+        try:
+            get_gcs_client() # Attempt to initialize
+            logger.info("GCS client check successful (or initialization attempted).")
+        except HTTPException as e:
+            logger.error(f"Failed GCS client initialization check during startup: {e.detail}")
+        except Exception as e:
+             logger.error(f"Unexpected error during GCS client check: {e}", exc_info=True)
+    else:
+         logger.info("Skipping GCS client check in LOCAL_DEV mode.")
 
 @app.on_event("shutdown")
 def shutdown_event():
     """Tasks to run when the application shuts down."""
     logger.info("Application shutdown: Cleaning up resources...")
-    db.close_db_pool() # Close the database connection pool
-    # No explicit shutdown needed for GCS client library typically
+    db.close_db_pool()
 
+# --- Helper to Get Workspace Config --- 
+# (You might already have this or similar logic)
+def get_workspace_config_from_db(workspace_id: uuid.UUID, db_conn) -> Optional[Dict]:
+    """Placeholder: Fetches workspace config from the database."""
+    query = """
+        SELECT config_chunking_method, config_chunk_size, config_chunk_overlap, config_similarity_metric 
+        FROM workspaces WHERE workspace_id = %s
+    """
+    try:
+        with db_conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+            cur.execute(query, (str(workspace_id),))
+            result = cur.fetchone()
+            if result:
+                # Convert to dict and map to expected processing pipeline keys if needed
+                # Example: 'config_similarity_metric' might map to 'embedding_model'
+                # This mapping needs care!
+                config = dict(result)
+                # Placeholder mapping - Adjust based on your actual schema/needs
+                return {
+                    "chunking_method": config.get("config_chunking_method", "recursive"),
+                    "chunk_size": config.get("config_chunk_size", 1000),
+                    "chunk_overlap": config.get("config_chunk_overlap", 200),
+                    "embedding_model": config.get("config_similarity_metric", "text-multilingual-embedding-002") # Example mapping!
+                }
+            else:
+                 logger.warning(f"Workspace config not found in DB for ID: {workspace_id}")
+                 return None
+    except Exception as e:
+        logger.error(f"Error fetching workspace config for {workspace_id}: {e}", exc_info=True)
+        return None
 
 # --- API Endpoints ---
 
@@ -408,59 +505,66 @@ async def direct_upload(
     workspace_id_str: str = Form(..., description="The workspace UUID (sent as string form data)."),
     files: List[UploadFile] = File(..., description="The files to upload."),
     current_user: models.User = Depends(get_current_user),
-    gcs_client: storage.Client = Depends(get_gcs_client)
+    # Use Optional[Any] to avoid definition-time error when storage is None
+    gcs_client: Optional[Any] = Depends(get_gcs_client)
 ):
     """
-    Uploads multiple files directly to Google Cloud Storage.
+    Uploads multiple files.
+    If LOCAL_DEV=True, saves files locally and triggers local processing.
+    If LOCAL_DEV=False, uploads files directly to Google Cloud Storage.
     
     The files are associated with the specified workspace and the authenticated user.
     Only allows files with extensions commonly used for RAG systems.
-    Returns details about each uploaded file.
+    Returns details about each uploaded file and initial processing status.
     """
     # --- ADD VALIDATION/CONVERSION ---
     try:
-        # Manually convert the string to a UUID object
         workspace_id = uuid.UUID(workspace_id_str)
-        logger.info(f"Received workspace_id: {workspace_id} (from string: '{workspace_id_str}')")
+        logger.info(f"Upload request for workspace: {workspace_id} (from string: '{workspace_id_str}')")
     except ValueError:
         logger.error(f"Invalid workspace_id format received: {workspace_id_str}")
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                             detail=f"Invalid format for workspace_id: '{workspace_id_str}'. Expected UUID.")
     
-    # Verify workspace exists and belongs to user
-    query = """
-        SELECT w.workspace_id 
-        FROM workspaces w
-        WHERE w.workspace_id = %s AND (
-            w.owner_user_id = %s
-            OR w.workspace_id IN (
-                SELECT wga.workspace_id 
-                FROM workspace_group_access wga
-                WHERE wga.group_id IN (
-                    SELECT ugm.group_id 
-                    FROM user_group_memberships ugm 
-                    WHERE ugm.user_id = %s
-                )
-            )
-        );
-    """
+    # --- Verify workspace access and get config --- 
+    workspace_config = None
     try:
         with get_db_session() as conn:
-            with conn.cursor() as cur:
-                cur.execute(query, (str(workspace_id), current_user.user_id, current_user.user_id))
+            # Fetch workspace existence, access, and config in one go
+            query = """
+                SELECT 
+                    w.workspace_id, w.config_chunking_method, w.config_chunk_size, 
+                    w.config_chunk_overlap, w.config_similarity_metric 
+                FROM workspaces w
+                LEFT JOIN workspace_group_access wga ON w.workspace_id = wga.workspace_id
+                LEFT JOIN user_group_memberships ugm ON wga.group_id = ugm.group_id AND ugm.user_id = %s
+                WHERE w.workspace_id = %s 
+                AND (w.owner_user_id = %s OR ugm.user_id IS NOT NULL)
+                GROUP BY w.workspace_id;
+            """
+            with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+                cur.execute(query, (current_user.user_id, str(workspace_id), current_user.user_id))
                 result = cur.fetchone()
                 if not result:
                     raise HTTPException(
                         status_code=status.HTTP_404_NOT_FOUND,
                         detail=f"Workspace with ID {workspace_id} not found or you don't have access."
                     )
+                # Store fetched config - map DB names to processing names if needed
+                workspace_config = {
+                    "chunking_method": result.get("config_chunking_method", "recursive"),
+                    "chunk_size": result.get("config_chunk_size", 1000),
+                    "chunk_overlap": result.get("config_chunk_overlap", 200),
+                    "embedding_model": result.get("config_similarity_metric", "text-multilingual-embedding-002")
+                }
+                logger.info(f"Verified access and fetched config for workspace {workspace_id}")
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error verifying workspace access: {e}", exc_info=True)
+        logger.error(f"Error verifying workspace access or fetching config: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to verify workspace access."
+            detail="Failed to verify workspace access or config."
         )
 
     if not files or len(files) == 0:
@@ -471,73 +575,190 @@ async def direct_upload(
 
     results = []
     
+    # --- Define Local Storage Dir (if needed) --- 
+    local_workspace_dir = None
+    if IS_LOCAL_DEV:
+        local_workspace_dir = os.path.join(LOCAL_STORAGE_PATH, str(workspace_id))
+        os.makedirs(local_workspace_dir, exist_ok=True)
+        logger.info(f"Ensured local directory exists: {local_workspace_dir}")
+    
     # Process each file
     for file in files:
+        upload_status = "error"
+        upload_message = "An unexpected error occurred."
+        details = {}
+        local_save_path = None
+
         try:
             filename = file.filename
             content_type = file.content_type
             
             if not filename:
-                results.append({
-                    "filename": "unknown",
-                    "status": "error",
-                    "message": "Filename could not be determined."
-                })
+                upload_message = "Filename could not be determined."
+                results.append({"filename": "unknown", "status": upload_status, "message": upload_message})
                 continue
                 
             # Validate file extension
             _, file_extension = os.path.splitext(filename.lower())
             if file_extension not in ALLOWED_FILE_EXTENSIONS:
-                results.append({
-                    "filename": filename,
-                    "status": "error",
-                    "message": f"File type {file_extension} not allowed. Allowed types: {', '.join(ALLOWED_FILE_EXTENSIONS)}"
-                })
+                upload_message = f"File type {file_extension} not allowed. Allowed types: {', '.join(ALLOWED_FILE_EXTENSIONS)}"
+                results.append({"filename": filename, "status": upload_status, "message": upload_message})
                 continue
                 
-            # Define the object path in GCS
-            object_name = f"{str(workspace_id)}/{filename}"
-            
-            # Upload to GCS
-            bucket = gcs_client.bucket(GCS_BUCKET_NAME)
-            blob = bucket.blob(object_name)
-            
-            # Upload the file stream directly to GCS
-            blob.upload_from_file(
-                file.file,
-                content_type=content_type,
-            )
-            
-            # Add metadata to the blob
-            blob.metadata = {
-                "uploaded_by": current_user.user_id,
-                "upload_time": datetime.datetime.now().isoformat(),
-                "original_filename": filename
-            }
-            blob.patch()
-            
-            logger.info(f"Successfully uploaded file to gs://{GCS_BUCKET_NAME}/{object_name}")
-            
-            # Add successful result
+            # --- Conditional Upload/Save --- 
+            if IS_LOCAL_DEV:
+                # --- Save Locally --- 
+                local_save_path = os.path.join(local_workspace_dir, filename)
+                logger.info(f"Attempting to save file locally to: {local_save_path}")
+                try:
+                    with open(local_save_path, "wb") as buffer:
+                        shutil.copyfileobj(file.file, buffer)
+                    logger.info(f"Successfully saved file locally: {local_save_path}")
+                    upload_status = "success_local"
+                    upload_message = "File saved locally. Triggering processing."
+                    details = {"local_path": local_save_path, "content_type": content_type}
+                except Exception as save_err:
+                    logger.error(f"Failed to save file locally {filename}: {save_err}", exc_info=True)
+                    upload_message = f"Failed to save file locally: {save_err}"
+                    raise # Re-raise to be caught by outer try/except
+
+            else:
+                # --- Upload to GCS --- 
+                if not gcs_client:
+                    raise ConnectionError("GCS Client is not available for cloud upload.")
+                if not GCS_BUCKET_NAME:
+                     raise ValueError("GCS_BUCKET_NAME is not configured for cloud upload.")
+                    
+                object_name = f"{str(workspace_id)}/{filename}" # GCS path structure
+                logger.info(f"Attempting to upload file to gs://{GCS_BUCKET_NAME}/{object_name}")
+                
+                bucket = gcs_client.bucket(GCS_BUCKET_NAME)
+                blob = bucket.blob(object_name)
+                
+                blob.upload_from_file(
+                    file.file,
+                    content_type=content_type,
+                )
+                
+                # Add metadata (optional but helpful)
+                blob.metadata = {
+                    "uploaded_by": current_user.user_id,
+                    "upload_time": datetime.datetime.now().isoformat(),
+                    "original_filename": filename,
+                    "workspace_id": str(workspace_id) # Store workspace ID in metadata
+                }
+                blob.patch()
+                
+                logger.info(f"Successfully uploaded file to gs://{GCS_BUCKET_NAME}/{object_name}")
+                upload_status = "success_gcs"
+                upload_message = "File uploaded successfully to GCS."
+                details = {"gcs_path": object_name, "content_type": content_type}
+                # NOTE: GCS upload automatically triggers the Cloud Run/Function via Pub/Sub
+                # No explicit trigger needed here for the cloud path.
+
+            # --- Append result for this file (before potential processing trigger) --- 
             results.append({
                 "filename": filename,
-                "status": "success",
-                "message": "File uploaded successfully",
-                "gcs_path": object_name,
-                "content_type": content_type
+                "status": upload_status,
+                "message": upload_message,
+                **details
             })
-            
+
+            # --- Trigger Local Processing (if applicable) --- 
+            if IS_LOCAL_DEV and local_save_path and upload_status == "success_local":
+                processing_script_path = os.path.abspath(os.path.join(
+                    os.path.dirname(__file__), '..', 'processing', 'main.py'
+                ))
+                
+                # Construct command, adding config overrides from DB
+                cmd = [
+                    sys.executable, # Use the same python interpreter
+                    processing_script_path,
+                    '--workspace-id', str(workspace_id),
+                    '--input-type', 'local_file',
+                    '--file-path', local_save_path
+                ]
+                # Add overrides if config was fetched and has values
+                if workspace_config:
+                     if workspace_config.get("embedding_model"):
+                         cmd.extend(['--embedding-model', workspace_config["embedding_model"]])
+                     if workspace_config.get("chunking_method"):
+                          cmd.extend(['--chunking-method', workspace_config["chunking_method"]])
+                     if workspace_config.get("chunk_size"):
+                          cmd.extend(['--chunk-size', str(workspace_config["chunk_size"])])
+                     if workspace_config.get("chunk_overlap"):
+                           cmd.extend(['--chunk-overlap', str(workspace_config["chunk_overlap"])])
+                           
+                logger.info(f"Triggering local processing via subprocess: {' '.join(cmd)}")
+                try:
+                    # Run synchronously for local dev simplicity. Consider async (e.g., background task) for responsiveness.
+                    proc = subprocess.run(
+                        cmd, 
+                        capture_output=True, 
+                        text=True, 
+                        check=False, # Don't raise exception on non-zero exit, just log
+                        cwd=os.path.dirname(processing_script_path), # Run from processing dir
+                        timeout=600 # Add a timeout (10 minutes)
+                    )
+                    
+                    if proc.returncode == 0:
+                        logger.info(f"Local processing completed successfully for {filename}.")
+                        logger.debug(f"Local processing stdout:\n{proc.stdout}")
+                        # Optionally update the status in results dict for this file
+                    else:
+                        logger.error(f"Local processing failed for {filename} with code {proc.returncode}.")
+                        logger.error(f"Stderr: {proc.stderr}")
+                        logger.error(f"Stdout: {proc.stdout}")
+                        # Optionally update status
+                        # Find the result entry for this file and update its message/status
+                        for res in results:
+                             if res.get("filename") == filename and res.get("local_path") == local_save_path:
+                                 res["status"] = "error_processing"
+                                 res["message"] = f"File saved locally, but processing failed (code {proc.returncode}). Check backend logs."
+                                 break
+                                 
+                except subprocess.TimeoutExpired:
+                     logger.error(f"Local processing timed out for {filename}.")
+                     # Update status in results
+                     for res in results:
+                          if res.get("filename") == filename and res.get("local_path") == local_save_path:
+                              res["status"] = "error_processing_timeout"
+                              res["message"] = "File saved locally, but processing timed out."
+                              break
+                except Exception as proc_err:
+                    logger.error(f"Error running local processing subprocess for {filename}: {proc_err}", exc_info=True)
+                     # Update status in results
+                    for res in results:
+                         if res.get("filename") == filename and res.get("local_path") == local_save_path:
+                             res["status"] = "error_processing"
+                             res["message"] = f"Error during local processing: {proc_err}"
+                             break
         except Exception as e:
-            logger.error(f"Failed to upload file {file.filename}: {e}", exc_info=True)
-            results.append({
-                "filename": file.filename or "unknown",
-                "status": "error",
-                "message": str(e)
-            })
+            logger.error(f"Failed processing file {file.filename if file else 'unknown'}: {e}", exc_info=True)
+            # Ensure a result entry exists even on error before local save/upload attempt
+            found = False
+            for res in results:
+                if res.get("filename") == file.filename:
+                     res["status"] = "error"
+                     res["message"] = f"Upload/Processing failed: {e}"
+                     found = True
+                     break
+            if not found and file and file.filename:
+                 results.append({
+                     "filename": file.filename,
+                     "status": "error",
+                     "message": f"Upload/Processing failed: {e}"
+                 })
+                
         finally:
-            await file.close()
-    
-    # Return results of all uploads
+             if file:
+                 # Ensure file is closed, crucial for subprocess saving
+                 try:
+                     await file.close()
+                 except Exception as close_err:
+                      logger.warning(f"Error closing file {file.filename}: {close_err}")
+   
+    # Return results of all uploads/saves
     return results
 
 # --- Helper Function for Admin Check ---
@@ -932,4 +1153,111 @@ async def get_all_workspace_group_assignments(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                             detail="Failed to retrieve workspace-group assignments.")
 
-# --- Add other endpoints later (e.g., listing documents, query endpoint) ---
+# --- Add the query endpoint ---
+@app.post("/api/query",
+          # response_model removed for streaming
+          tags=["Queries"],
+          summary="Query the RAG system (Streaming)")
+async def query_documents_stream( # Renamed
+    query_data: Dict[str, Any] = Body(..., description="Query data including text, workspace ID, and optional history"),
+    current_user: models.User = Depends(get_current_user)
+):
+    """
+    Process a query against a workspace's documents using the RAG system.
+    Accepts optional chat history for context.
+    Streams the response back to the client.
+    """
+    try:
+        # Extract and validate required fields
+        if 'query' not in query_data or not query_data['query'].strip():
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Query text is required")
+        if 'workspace_id' not in query_data or not query_data['workspace_id']:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="workspace_id is required")
+        
+        try:
+            workspace_id = str(uuid.UUID(query_data['workspace_id']))
+        except ValueError:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid workspace_id format: {query_data['workspace_id']}")
+
+        # Verify workspace access (using a context manager for the session)
+        connection_string = None
+        try:
+            with get_db_session() as conn:
+                access_query = """
+                    SELECT 1 FROM workspaces w
+                    LEFT JOIN workspace_group_access wga ON w.workspace_id = wga.workspace_id
+                    LEFT JOIN user_group_memberships ugm ON wga.group_id = ugm.group_id AND ugm.user_id = %s
+                    WHERE w.workspace_id = %s AND (w.owner_user_id = %s OR ugm.user_id IS NOT NULL) LIMIT 1;
+                """
+                with conn.cursor() as cur:
+                    cur.execute(access_query, (current_user.user_id, workspace_id, current_user.user_id))
+                    if not cur.fetchone():
+                        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Workspace not found or you don't have access")
+            
+            # Get database connection string *after* session is closed
+            if IS_LOCAL_DEV:
+                db_user = os.getenv('DB_USER')
+                db_password = os.getenv('DB_PASSWORD')
+                db_host = os.getenv('DB_HOST', 'localhost')
+                db_port = os.getenv('DB_PORT', '5432')
+                db_name = os.getenv('DB_NAME')
+                if not all([db_user, db_password, db_host, db_name]):
+                    raise HTTPException(status_code=500, detail="Local DB config incomplete")
+                connection_string = f"postgresql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}"
+            else:
+                connection_string = os.getenv('DATABASE_URL')
+                if not connection_string:
+                    raise HTTPException(status_code=500, detail="DATABASE_URL not configured")
+
+        except HTTPException as http_ex:
+            raise http_ex # Re-raise permission/not found errors
+        except Exception as db_err:
+            logger.error(f"Database error during workspace access/config: {db_err}", exc_info=True)
+            raise HTTPException(status_code=500, detail="Database error during setup.")
+
+        # Set defaults and overrides
+        embedding_model = query_data.get('embedding_model', 'text-multilingual-embedding-002')
+        top_k = query_data.get('top_k', 4)
+        # Let get_llm handle the default logic based on env var or fallback
+        llm_model = query_data.get('model', None) 
+        chat_history = query_data.get('chat_history', [])
+        temperature = query_data.get('temperature', 0.2)
+        
+        # Correctly check if the imported function is available
+        if not process_query_stream:
+            logger.error("process_query_stream function is not available (import likely failed).")
+            raise HTTPException(status_code=501, detail="Streaming query function unavailable.")
+
+        # Define the async generator for streaming
+        async def stream_generator():
+            try:
+                logger.info(f"Starting stream for query '{query_data['query'][:30]}...' in workspace {workspace_id}")
+                # Call the imported function directly
+                stream = process_query_stream(
+                    query=query_data['query'],
+                    workspace_id=workspace_id,
+                    connection_string=connection_string,
+                    embedding_model_name=embedding_model,
+                    model_name=llm_model,
+                    top_k=top_k,
+                    chat_history=chat_history,
+                    temperature=temperature
+                )
+                async for chunk in stream:
+                    yield chunk
+                logger.info(f"Finished stream for query '{query_data['query'][:30]}...' in workspace {workspace_id}")
+            except Exception as stream_err:
+                logger.error(f"Error during response streaming: {stream_err}", exc_info=True)
+                yield f"\n\nStream Error: {stream_err}" 
+        
+        # Return the StreamingResponse
+        return StreamingResponse(stream_generator(), media_type="text/plain")
+
+    except HTTPException as http_ex:
+        logger.error(f"HTTP Exception in query stream endpoint: {http_ex.detail}")
+        raise http_ex
+    except Exception as e:
+        logger.error(f"Unexpected error setting up query stream: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to initiate query stream: {str(e)}")
+
+# --- End of file ---

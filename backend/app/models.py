@@ -7,11 +7,12 @@ from datetime import datetime
 
 class WorkspaceCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100, description="Name of the workspace.")
-    # Include default config values if desired
-    config_chunking_method: str = Field("semantic", description="Chunking method (e.g., 'fixed', 'semantic')")
+    # Set default chunking method to recursive
+    config_chunking_method: str = Field("recursive", description="Chunking method (e.g., 'recursive', 'token')")
     config_chunk_size: int = Field(1000, gt=0, description="Target size for text chunks.")
     config_chunk_overlap: int = Field(100, ge=0, description="Overlap size between chunks.")
-    config_similarity_metric: str = Field("cosine", description="Similarity metric (e.g., 'cosine', 'euclidean')")
+    # Default similarity metric (embedding model related)
+    config_similarity_metric: str = Field("text-multilingual-embedding-002", description="Embedding model name or similarity type")
     # group_id: Optional[uuid.UUID] = Field(None, description="Optional: Group ID to associate with this workspace.")
 
 
