@@ -6,7 +6,7 @@ import mimetypes
 import tempfile
 
 from langchain_community.document_loaders import (
-    PyPDFLoader,
+    PyMuPDFLoader,
     Docx2txtLoader,
     TextLoader,
     CSVLoader,
@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 # Mapping of file extensions to their respective loaders
 LOADER_MAPPING = {
-    '.pdf': PyPDFLoader,
+    '.pdf': PyMuPDFLoader,
     '.txt': TextLoader,
     '.doc': Docx2txtLoader,
     '.docx': Docx2txtLoader,

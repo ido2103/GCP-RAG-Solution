@@ -253,6 +253,23 @@ const deleteWorkspace = async (workspaceId) => {
 };
 
 /**
+ * Deletes a workspace.
+ * @param {string} workspaceId - The UUID of the workspace to delete.
+ * @returns {Promise<void>} A promise that resolves when the workspace is deleted.
+ */
+const deleteWorkspaceAdmin = async (workspaceId) => {
+  try {
+    // Fix the endpoint URL - remove the duplicate /api/ prefix
+    await api.delete(`/workspaces/${workspaceId}`);
+  } catch (error) {
+    console.error("Error deleting workspace:", error.response?.data || error.message);
+    // Propagate a user-friendly error message
+    const detail = error.response?.data?.detail || error.message || "Failed to delete workspace.";
+    throw new Error(detail);
+  }
+};
+
+/**
  * Fetches all workspace-group assignments.
  * @returns {Promise<Array<{workspace_id: string, group_id: string}>>} A promise that resolves to an array of assignment objects.
  */
@@ -297,6 +314,30 @@ const assignGroupsToWorkspace = async (workspaceId, groupIds) => {
   }
 };
 
+/**
+ * Updates the configuration for a specific workspace.
+ * Requires admin privileges.
+ * @param {string} workspaceId - The UUID of the workspace to update.
+ * @param {object} configData - An object containing the configuration fields to update.
+ *                                Example: { config_chunk_size: 500, config_top_k: 5 }
+ * @returns {Promise<object>} A promise that resolves to the updated workspace object.
+ */
+const updateWorkspaceConfig = async (workspaceId, configData) => {
+  if (!workspaceId) {
+    throw new Error("Workspace ID is required to update configuration.");
+  }
+  try {
+    // Use the new endpoint
+    const response = await api.put(`/workspaces/${workspaceId}/config`, configData);
+    return response.data; // Return the updated workspace data
+  } catch (error) {
+    console.error(`Error updating config for workspace ${workspaceId}:`, error.response?.data || error.message);
+    // Provide a more specific error message if possible
+    const detail = error.response?.data?.detail || error.message || "Failed to update workspace configuration.";
+    throw new Error(detail);
+  }
+};
+
 export {
   listUsers,
   // createUser, - removed since not supported by the backend
@@ -312,7 +353,9 @@ export {
   listWorkspaces,
   createWorkspace,
   deleteWorkspace,
+  deleteWorkspaceAdmin,
   getAllWorkspaceGroupAssignments,
   getWorkspaceGroups,
-  assignGroupsToWorkspace
+  assignGroupsToWorkspace,
+  updateWorkspaceConfig
 }; 

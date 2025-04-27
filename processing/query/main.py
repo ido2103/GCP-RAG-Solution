@@ -26,6 +26,18 @@ from pydantic import BaseModel, Field
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+# --- Query Rewriting Prompt Template ---
+REWRITE_QUERY_TEMPLATE = """Given the following conversation history and a follow-up question,
+rephrase the follow-up question to be a standalone question in its original language.
+Include enough context from the history to make the question understandable without the history.
+
+Chat History:
+{chat_history}
+
+Follow Up Input: {question}
+Standalone Question:"""
+REWRITE_QUERY_PROMPT = ChatPromptTemplate.from_template(REWRITE_QUERY_TEMPLATE)
+
 # Load common embedding models from embed_text
 try:
     # Assumes embed_text is in the same parent directory (processing)
@@ -240,52 +252,106 @@ async def create_streaming_query_chain(
     temperature: float = 0.2,
     chat_history: Optional[List[Dict[str, Any]]] = None
 ):
-    """Create a query processing chain designed for streaming output."""
-    # Get the LLM configured for streaming
-    llm = get_llm(model_name=model_name, temperature=temperature, streaming=True)
+    """Create a query processing chain designed for streaming output, including query rewriting."""
+    # Get LLMs: one for rewriting (non-streaming, fast model), one for answering (streaming)
+    rewrite_llm = get_llm(model_name="gemini-2.0-flash", temperature=0.0, streaming=False) # Use a fast model for rewrite
+    answer_llm = get_llm(model_name=model_name, temperature=temperature, streaming=True)
     
-    template = """You are a helpful AI assistant for a RAG (Retrieval-Augmented Generation) system.
-Your goal is to answer the user's latest question based on the provided context documents AND the preceding conversation history.
+    # Define the RAG answer prompt template (as before)
+    ANSWER_TEMPLATE = """
+    אתה סייען בינה מלאכותית מקצועי עבור מערכת RAG (חיפוש משולב ביצירה).
+    מטרתך היא לספק מענה מדויק לשאלת המשתמש האחרונה (שעשויה להיות מנוסחת מחדש), בהתבסס על מסמכי ההקשר שסופקו והיסטוריית השיחה הקודמת.
 
-CONVERSATION HISTORY:
-{chat_history_str}
+    היסטוריית שיחה (לעיון):
+    {chat_history}
 
-RETRIEVED DOCUMENTS (Context):
-{context}
+    מסמכים מאוחזרים (הקשר):
+    {context}
 
-USER QUESTION:
-{question}
+    שאלה (Standalone):
+    {question}
 
-INSTRUCTIONS:
-1.  Carefully review the CONVERSATION HISTORY to understand the context of the USER QUESTION.
-2.  Use the RETRIEVED DOCUMENTS as the primary source of information to answer the USER QUESTION.
-3.  If the documents contain relevant information, synthesize it with the conversation history to provide a complete and relevant answer.
-4.  If the documents don't contain enough information, explain what you can based on the available context AND conversation history.
-5.  If neither the documents nor the history provide relevant information, politely state that you cannot answer the question based on the provided information.
-6.  Keep your answer concise and directly related to the USER QUESTION.
+    הנחיות:
 
-ANSWER:"""
-    prompt = ChatPromptTemplate.from_template(template)
+    עיין בקפידה בהיסטוריית השיחה כדי להבין את ההקשר המלא של השאלה.
 
-    # Prepare inputs for the prompt
-    inputs = RunnableParallel(
-        context=(lambda x: retriever.get_relevant_documents(x["question"])) | RunnableLambda(format_docs),
-        question=lambda x: x["question"],
-        chat_history_str=lambda x: format_chat_history(x.get("chat_history", []))
+    הסתמך **אך ורק** על המסמכים המאוחזרים כמקור מידע עיקרי בעת ניסוח התשובה.
+
+    אם המסמכים כוללים מידע רלוונטי, שלב אותו בתשובתך.
+
+    אם המסמכים כוללים את המידע הרלוונטי, אך הוא מסומן כ'בוטל' או 'לא רלוונטי', אתה רשאי להשתמש בזה, אך עליך ליידע את המשתמש בהתאם.
+
+    במקרה שהמסמכים אינם מספקים מידע מספק, או שהם חסרים, השב בנימוס כי אין באפשרותך לספק מענה על בסיס המידע הזמין במסמכים.
+
+    ספק תשובה **מלאה ומפורטת**, הכוללת את **כל** הנקודות הרלוונטיות שנמצאו במסמכים.
+
+    אם קיימות מספר הגבלות, תנאים או נקודות רלוונטיות בתגובה לשאלה, אנא פרט את כולן ברשימה ברורה.
+
+    שים לב להסטוריה של השיחה והשאלות של המשתמש והתשובות שלך כדי להסיק מסקנות ולענות בצורה מדויקת ומספקת.
+
+    שים לב, התשובה שלך תוצג באתר שתומך ב "React Markdown" ולכן יש להתחשב בכך בכתיבת התשובה (אם רלוונטי).
+
+    תשובה:"""
+    ANSWER_PROMPT = ChatPromptTemplate.from_template(ANSWER_TEMPLATE)
+
+    # --- Define Query Rewriting Chain ---
+    # Takes original question and history, returns rewritten question
+    rewrite_chain = (
+        {
+            "question": RunnableLambda(lambda x: x['question']), 
+            "chat_history": RunnableLambda(lambda x: format_chat_history(x.get('chat_history', [])))
+        }
+        | REWRITE_QUERY_PROMPT
+        | rewrite_llm
+        | StrOutputParser()
     )
+
+    # --- Define Main RAG Chain ---
+    # 1. Prepare input for rewrite chain
+    # 2. Run rewrite chain to get rewritten_question
+    # 3. Use rewritten_question for retrieval
+    # 4. Prepare context, history, and rewritten_question for final prompt
+    # 5. Run final prompt + LLM
     
-    # Build the chain: inputs -> prompt -> llm (streaming)
-    # Note: We don't use StrOutputParser here as we want the stream of chunks
-    chain = inputs | prompt | llm
-    
-    return chain
+    # Define a function to combine inputs after rewriting
+    def prepare_rag_input(inputs):
+        rewritten_question = inputs["rewritten_question"]
+        original_input = inputs["original_input"]
+        return {
+            "question": rewritten_question, # Use rewritten for prompt
+            "chat_history": format_chat_history(original_input.get('chat_history', [])), # Formatted history
+            "context": format_docs(retriever.get_relevant_documents(rewritten_question)) # Retrieve using rewritten
+        }
+        
+    # Chain construction
+    full_chain = (
+        # Keep original input alongside rewritten question
+        RunnableParallel(
+            rewritten_question=rewrite_chain,
+            original_input=RunnablePassthrough() # Pass original dict {question, chat_history}
+        )
+        # Prepare input for the final RAG prompt
+        | RunnableLambda(prepare_rag_input)
+        # Add Debug Peeking Here
+        | RunnableLambda(lambda x: print("\n--- DEBUG: RAG Chain Input ---") or x) # Print separator
+        | RunnableLambda(lambda x: print(f"Rewritten Question: {x.get('question')}") or x)
+        | RunnableLambda(lambda x: print(f"Formatted Chat History:\n{x.get('chat_history')}") or x)
+        | RunnableLambda(lambda x: print(f"Formatted Context:\n{x.get('context')}") or x) 
+        | RunnableLambda(lambda x: print("-----------------------------") or x) # Print separator
+        # Final prompt and LLM call
+        | ANSWER_PROMPT
+        | answer_llm
+        | StrOutputParser()
+    )
+
+    return full_chain
 
 async def process_query_stream(
     query: str,
     workspace_id: str,
     connection_string: str,
     embedding_model_name: str = "text-multilingual-embedding-002",
-    model_name: str = "gemini-1.5-flash-preview-0514",
+    model_name: str = "gemini-2.0-flash",
     table_prefix: str = "",
     search_type: str = "cosine",
     top_k: int = 4,
@@ -337,7 +403,7 @@ def process_query(
     workspace_id: str,
     connection_string: str,
     embedding_model_name: str = "text-multilingual-embedding-002",
-    model_name: str = "gemini-1.5-flash-preview-0514", # Updated default
+    model_name: str = "gemini-2.0-flash", # Updated default
     table_prefix: str = "",
     search_type: str = "cosine",
     top_k: int = 4,
@@ -362,7 +428,7 @@ def main():
     parser.add_argument('-w', '--workspace-id', required=True, help='UUID of the target workspace.')
     parser.add_argument('--embedding-model', default='text-multilingual-embedding-002', 
                         help='Vertex AI Embedding model used for retrieval (default: text-multilingual-embedding-002).')
-    parser.add_argument('--model-name', default="gemini-1.5-flash-preview-0514",
+    parser.add_argument('--model-name', default="gemini-2.0-flash",
                         help='Specific Vertex AI LLM model name.')
     parser.add_argument('--connection-string', help='Database connection string (overrides env vars).')
     parser.add_argument('--table-prefix', default='', help='Optional prefix for database tables.')

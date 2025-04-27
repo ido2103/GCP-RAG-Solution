@@ -58,6 +58,7 @@ else:
 
 # --- Local Application Imports ---
 from app import models, db # Your local models and db connection utility
+from app.models import WorkspaceConfigUpdate # Import the new model
 
 # --- Firebase Imports ---
 import firebase_admin
@@ -119,6 +120,14 @@ app = FastAPI(
     version="0.1.0"
 )
 
+# --- Define API Tags for Endpoints ---
+# Centralized tag definitions for consistent use across endpoints
+tags_workspaces = ["Workspaces"]
+tags_uploads = ["Uploads & Documents"]
+tags_admin = ["Admin Management"]
+tags_queries = ["Queries"]
+tags_general = ["General"]
+
 # --- Database Initialization (Crucial - after env load) ---
 try:
     db.init_db_pool() # Initialize the pool using loaded env vars and IS_LOCAL_DEV flag
@@ -130,6 +139,30 @@ except Exception as e:
     # Decide if you want to exit
 
 # --- Dependencies ---
+
+# Create a reusable bearer token auth dependency
+security = HTTPBearer()
+
+async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    """Verify Firebase ID token and return user details including custom claims."""
+    token = credentials.credentials
+    logger.info(f"Attempting to verify token: {token[:10]}...") # Log start and part of token
+    try:
+        decoded_token = auth.verify_id_token(token, clock_skew_seconds=10)
+        user_id = decoded_token['uid']
+        email = decoded_token.get('email')
+        role = decoded_token.get('role')
+        groups = decoded_token.get('groups', [])
+        logger.info(f"Token verified successfully for user: {user_id}, Role: {role}") # Log success
+        return models.User(user_id=user_id, email=email, role=role, groups=groups)
+    except Exception as e:
+        logger.error(f"Token verification failed: {e}", exc_info=True) # Log the specific error
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
 
 # Database Session Dependency
 @contextmanager
@@ -154,6 +187,17 @@ def get_db_session():
     finally:
         if conn:
             db.release_db_connection(conn)
+
+# --- Helper Function for Admin Check ---
+def require_admin(current_user: models.User = Depends(get_current_user)):
+    """Dependency that raises HTTP 403 if the user is not an admin."""
+    if not current_user.role or current_user.role.lower() != 'admin':
+        logger.warning(f"Forbidden: Non-admin user {current_user.user_id} attempted admin action.")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin privileges required for this action."
+        )
+    return current_user
 
 # Google Cloud Storage Client Dependency (Conditional)
 _gcs_client = None
@@ -200,28 +244,18 @@ if not firebase_admin._apps:
               logger.error(f"FATAL: Failed to initialize Firebase Admin SDK with both explicit and default credentials: {default_e}")
               # Depending on criticality, you might raise an error here to stop startup
 
-# Create a reusable bearer token auth dependency
-security = HTTPBearer()
 
-async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
-    """Verify Firebase ID token and return user details including custom claims."""
-    token = credentials.credentials
-    logger.info(f"Attempting to verify token: {token[:10]}...") # Log start and part of token
-    try:
-        decoded_token = auth.verify_id_token(token, clock_skew_seconds=10)
-        user_id = decoded_token['uid']
-        email = decoded_token.get('email')
-        role = decoded_token.get('role')
-        groups = decoded_token.get('groups', [])
-        logger.info(f"Token verified successfully for user: {user_id}, Role: {role}") # Log success
-        return models.User(user_id=user_id, email=email, role=role, groups=groups)
-    except Exception as e:
-        logger.error(f"Token verification failed: {e}", exc_info=True) # Log the specific error
+
+# --- Helper Function for Admin Check ---
+def require_admin(current_user: models.User = Depends(get_current_user)):
+    """Dependency that raises HTTP 403 if the user is not an admin."""
+    if not current_user.role or current_user.role.lower() != 'admin':
+        logger.warning(f"Forbidden: Non-admin user {current_user.user_id} attempted admin action.")
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid authentication credentials",
-            headers={"WWW-Authenticate": "Bearer"},
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin privileges required for this action."
         )
+    return current_user
 
 # --- Application Lifespan Events ---
 @app.on_event("startup")
@@ -256,27 +290,20 @@ def shutdown_event():
 # --- Helper to Get Workspace Config --- 
 # (You might already have this or similar logic)
 def get_workspace_config_from_db(workspace_id: uuid.UUID, db_conn) -> Optional[Dict]:
-    """Placeholder: Fetches workspace config from the database."""
+    """Fetches workspace config from the database."""
     query = """
-        SELECT config_chunking_method, config_chunk_size, config_chunk_overlap, config_similarity_metric 
+        SELECT workspace_id, name, owner_user_id, created_at, 
+               config_chunking_method, config_chunk_size, config_chunk_overlap, 
+               config_similarity_metric, config_top_k, config_hybrid_search, config_embedding_model
         FROM workspaces WHERE workspace_id = %s
     """
     try:
         with db_conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
-            cur.execute(query, (str(workspace_id),))
+            cur.execute(query, (str(workspace_id),))  # Convert UUID to string here
             result = cur.fetchone()
             if result:
-                # Convert to dict and map to expected processing pipeline keys if needed
-                # Example: 'config_similarity_metric' might map to 'embedding_model'
-                # This mapping needs care!
-                config = dict(result)
-                # Placeholder mapping - Adjust based on your actual schema/needs
-                return {
-                    "chunking_method": config.get("config_chunking_method", "recursive"),
-                    "chunk_size": config.get("config_chunk_size", 1000),
-                    "chunk_overlap": config.get("config_chunk_overlap", 200),
-                    "embedding_model": config.get("config_similarity_metric", "text-multilingual-embedding-002") # Example mapping!
-                }
+                # Convert to dict
+                return dict(result)
             else:
                  logger.warning(f"Workspace config not found in DB for ID: {workspace_id}")
                  return None
@@ -287,14 +314,12 @@ def get_workspace_config_from_db(workspace_id: uuid.UUID, db_conn) -> Optional[D
 # --- API Endpoints ---
 
 # --- Root Endpoint ---
-@app.get("/", tags=["General"], summary="Root endpoint", description="Simple health check endpoint.")
+@app.get("/", tags=tags_general, summary="Root endpoint", description="Simple health check endpoint.")
 async def read_root():
     """Returns a simple message indicating the API is running."""
     return {"message": "RAG Backend API is running!"}
 
 # --- Workspace Endpoints ---
-tags_workspaces = ["Workspaces"]
-
 @app.post("/api/workspaces",
           response_model=models.WorkspaceResponse,
           status_code=status.HTTP_201_CREATED,
@@ -365,7 +390,8 @@ async def list_workspaces(
     base_query = """
         SELECT w.workspace_id, w.name, w.owner_user_id, w.created_at,
                w.config_chunking_method, w.config_chunk_size,
-               w.config_chunk_overlap, w.config_similarity_metric
+               w.config_chunk_overlap, w.config_similarity_metric,
+               w.config_top_k, w.config_hybrid_search, w.config_embedding_model
         FROM workspaces w
     """
     
@@ -431,7 +457,8 @@ async def get_workspace(
     base_query = """
         SELECT w.workspace_id, w.name, w.owner_user_id, w.created_at,
                w.config_chunking_method, w.config_chunk_size,
-               w.config_chunk_overlap, w.config_similarity_metric
+               w.config_chunk_overlap, w.config_similarity_metric,
+               w.config_top_k, w.config_hybrid_search, w.config_embedding_model
         FROM workspaces w
         WHERE w.workspace_id = %s
     """
@@ -485,8 +512,165 @@ async def get_workspace(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                            detail="Failed to retrieve workspace details.")
 
+@app.put("/api/workspaces/{workspace_id}/config",
+         response_model=models.WorkspaceResponse, # Return the updated workspace
+         tags=[tags_workspaces, tags_admin], # Tag as both workspace and admin
+         summary="Update workspace configuration (Admin Only)",
+         description="Updates specific configuration settings for a workspace. Requires admin privileges.")
+async def update_workspace_config(
+    workspace_id: uuid.UUID = Path(..., description="The UUID of the workspace to update"),
+    config_data: WorkspaceConfigUpdate = Body(..., description="The configuration fields to update."),
+    current_user: models.User = Depends(require_admin), # Ensure only admins can update config
+    db_conn=Depends(db.get_db_connection) # Use dependency injection for connection
+):
+    """Updates the configuration for a specific workspace."""
+    
+    # Convert Pydantic model to dict, excluding unset fields
+    update_data = config_data.model_dump(exclude_unset=True)
+    
+    if not update_data:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, 
+                            detail="No configuration fields provided for update.")
+
+    # Build the SET part of the SQL query dynamically
+    set_clauses = []
+    values = []
+    for key, value in update_data.items():
+        # Basic validation/sanitization could be added here if needed
+        # Ensure the key is a valid column name to prevent SQL injection risk
+        # (though Pydantic model validation helps significantly)
+        if key in [ # Explicitly list allowed config columns
+            "config_chunking_method", "config_chunk_size", "config_chunk_overlap", 
+            "config_similarity_metric", "config_top_k", "config_hybrid_search", 
+            "config_embedding_model"
+        ]:
+            set_clauses.append(f"{key} = %s")
+            values.append(value)
+        else:
+            logger.warning(f"Attempted to update invalid config field: {key}")
+            # Optionally raise an error or just ignore invalid fields
+
+    if not set_clauses:
+         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, 
+                            detail="No valid configuration fields provided for update.")
+
+    sql_set_string = ", ".join(set_clauses)
+    
+    # Append workspace_id to the values tuple for the WHERE clause
+    values.append(str(workspace_id))  # Convert UUID to string here
+
+    try:
+        with db_conn.cursor() as cursor:
+            sql = f"UPDATE workspaces SET {sql_set_string} WHERE workspace_id = %s RETURNING *;"
+            cursor.execute(sql, tuple(values))
+            updated_row = cursor.fetchone()
+            
+            if not updated_row:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                                    detail=f"Workspace {workspace_id} not found.")
+            
+            db_conn.commit()
+            logger.info(f"Admin {current_user.user_id} updated config for workspace {workspace_id}")
+            
+            # Map the updated row to the response model
+            # Get the updated config
+            updated_config = get_workspace_config_from_db(workspace_id, db_conn)
+            if updated_config:
+                # Construct the response model from the fetched dict
+                return models.WorkspaceResponse(**updated_config)
+            else:
+                 # Should not happen if RETURNING worked, but as fallback
+                 raise HTTPException(status_code=500, detail="Failed to retrieve updated workspace data.")
+
+    except psycopg2.Error as db_error:
+        logger.error(f"Database error updating workspace config {workspace_id}: {db_error}", exc_info=True)
+        db_conn.rollback()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
+                            detail=f"Database error: {db_error}")
+    except HTTPException as http_exc:
+        db_conn.rollback() # Rollback on known HTTP exceptions too
+        raise http_exc # Re-raise the specific HTTP exception
+    except Exception as e:
+        logger.error(f"Unexpected error updating workspace config {workspace_id}: {e}", exc_info=True)
+        db_conn.rollback()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
+                            detail="An unexpected error occurred.")
+    finally:
+        # Release connection if using managed connections (depends on db.py)
+        # db.release_db_connection(db_conn) # Assuming db.py handles this or context manager does
+        pass # Context manager should handle release
+
+@app.delete("/api/workspaces/{workspace_id}",
+            status_code=status.HTTP_204_NO_CONTENT,
+            tags=[tags_workspaces, tags_admin],
+            summary="Delete a workspace and associated data (Admin Only)",
+            description="Deletes a workspace, its documents, chunks, and access permissions. Requires admin privileges.")
+async def delete_workspace(
+    workspace_id: uuid.UUID = Path(..., description="The UUID of the workspace to delete"),
+    admin_user: models.User = Depends(require_admin)
+):
+    """Deletes a workspace and all associated data from the database. TODO: THIS IS ONLY  LOCAL AND WILL NOT WORK ON GCP!"""
+    
+    workspace_id_str = str(workspace_id)
+    logger.info(f"Admin {admin_user.user_id} attempting to delete workspace {workspace_id_str}")
+
+    # Use a context manager to handle transaction and connection release
+    try:
+        with get_db_session() as conn:
+            with conn.cursor() as cur:
+                # 1. Get all doc_ids associated with the workspace
+                cur.execute("SELECT doc_id FROM documents WHERE workspace_id = %s;", (workspace_id_str,))
+                doc_ids_result = cur.fetchall()
+                doc_ids = [row[0] for row in doc_ids_result]
+                logger.debug(f"Found {len(doc_ids)} documents to delete for workspace {workspace_id_str}")
+
+                # 2. Delete chunks associated with those documents (if any)
+                if doc_ids:
+                    # Need to convert UUIDs to strings if doc_id is UUID
+                    doc_id_strs = [str(doc_id) for doc_id in doc_ids]
+                    cur.execute("DELETE FROM chunks WHERE doc_id = ANY(%s::uuid[]);", (doc_id_strs,))
+                    logger.info(f"Deleted {cur.rowcount} chunks for workspace {workspace_id_str}")
+                
+                # 3. Delete documents associated with the workspace
+                cur.execute("DELETE FROM documents WHERE workspace_id = %s;", (workspace_id_str,))
+                deleted_docs_count = cur.rowcount
+                logger.info(f"Deleted {deleted_docs_count} documents for workspace {workspace_id_str}")
+
+                # 4. Delete workspace group access permissions
+                cur.execute("DELETE FROM workspace_group_access WHERE workspace_id = %s;", (workspace_id_str,))
+                logger.info(f"Deleted {cur.rowcount} group access entries for workspace {workspace_id_str}")
+                
+                # 5. Delete the workspace itself
+                cur.execute("DELETE FROM workspaces WHERE workspace_id = %s RETURNING workspace_id;", (workspace_id_str,))
+                deleted_workspace = cur.fetchone()
+
+                if not deleted_workspace:
+                     # Check if it existed *before* trying to delete documents/chunks
+                     # This logic could be improved by checking existence first
+                     logger.warning(f"Workspace {workspace_id_str} not found for deletion, or already deleted.")
+                     # Even if workspace was not found, associated data might have been orphaned.
+                     # The deletes above would have handled that, so maybe 404 isn't right if docs were deleted.
+                     # For simplicity, let's assume if the final delete fails, it wasn't there initially.
+                     raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                                         detail=f"Workspace with ID {workspace_id_str} not found.")
+                
+                logger.info(f"Successfully deleted workspace {workspace_id_str}")
+                # Transaction committed automatically by get_db_session context manager
+
+        # Return 204 No Content on successful deletion
+        return None
+        
+    except HTTPException:
+         # Re-raise HTTP exceptions (like 404 or 403)
+         raise
+    except Exception as e:
+         # Log unexpected errors during the delete process
+         logger.error(f"Error deleting workspace {workspace_id_str}: {e}", exc_info=True)
+         # Let the context manager handle rollback
+         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            detail="An error occurred while deleting the workspace.")
+
 # --- Document/Upload Endpoints ---
-tags_uploads = ["Uploads & Documents"]
 
 # Define allowed file extensions
 ALLOWED_FILE_EXTENSIONS = [
@@ -531,41 +715,46 @@ async def direct_upload(
     try:
         with get_db_session() as conn:
             # Fetch workspace existence, access, and config in one go
-            query = """
-                SELECT 
-                    w.workspace_id, w.config_chunking_method, w.config_chunk_size, 
-                    w.config_chunk_overlap, w.config_similarity_metric 
+            access_query = """
+                SELECT w.config_chunking_method, w.config_chunk_size, 
+                       w.config_chunk_overlap, w.config_similarity_metric,
+                       w.config_top_k, w.config_hybrid_search, w.config_embedding_model
                 FROM workspaces w
                 LEFT JOIN workspace_group_access wga ON w.workspace_id = wga.workspace_id
                 LEFT JOIN user_group_memberships ugm ON wga.group_id = ugm.group_id AND ugm.user_id = %s
-                WHERE w.workspace_id = %s 
-                AND (w.owner_user_id = %s OR ugm.user_id IS NOT NULL)
-                GROUP BY w.workspace_id;
+                WHERE w.workspace_id = %s AND (w.owner_user_id = %s OR ugm.user_id IS NOT NULL);
             """
             with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
-                cur.execute(query, (current_user.user_id, str(workspace_id), current_user.user_id))
+                cur.execute(access_query, (current_user.user_id, str(workspace_id), current_user.user_id))
                 result = cur.fetchone()
                 if not result:
-                    raise HTTPException(
-                        status_code=status.HTTP_404_NOT_FOUND,
-                        detail=f"Workspace with ID {workspace_id} not found or you don't have access."
-                    )
-                # Store fetched config - map DB names to processing names if needed
-                workspace_config = {
-                    "chunking_method": result.get("config_chunking_method", "recursive"),
-                    "chunk_size": result.get("config_chunk_size", 1000),
-                    "chunk_overlap": result.get("config_chunk_overlap", 200),
-                    "embedding_model": result.get("config_similarity_metric", "text-multilingual-embedding-002")
-                }
-                logger.info(f"Verified access and fetched config for workspace {workspace_id}")
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error verifying workspace access or fetching config: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to verify workspace access or config."
-        )
+                    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, 
+                                      detail=f"Workspace not found or you don't have access")
+                    
+                # Store workspace config
+                workspace_config = dict(result)
+                logger.info(f"Retrieved workspace config for query: {workspace_config}")
+            
+            # Get database connection string *after* session is closed
+            if IS_LOCAL_DEV:
+                db_user = os.getenv('DB_USER')
+                db_password = os.getenv('DB_PASSWORD')
+                db_host = os.getenv('DB_HOST', 'localhost')
+                db_port = os.getenv('DB_PORT', '5432')
+                db_name = os.getenv('DB_NAME')
+                if not all([db_user, db_password, db_host, db_name]):
+                    raise HTTPException(status_code=500, detail="Local DB config incomplete")
+                connection_string = f"postgresql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}"
+            else:
+                connection_string = os.getenv('DATABASE_URL')
+                if not connection_string:
+                    raise HTTPException(status_code=500, detail="DATABASE_URL not configured")
+
+    except HTTPException as http_ex:
+        raise http_ex # Re-raise permission/not found errors
+    except Exception as db_err:
+        logger.error(f"Database error during workspace access/config: {db_err}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Database error during setup.")
 
     if not files or len(files) == 0:
         raise HTTPException(
@@ -704,19 +893,22 @@ async def direct_upload(
                     if proc.returncode == 0:
                         logger.info(f"Local processing completed successfully for {filename}.")
                         logger.debug(f"Local processing stdout:\n{proc.stdout}")
-                        # Optionally update the status in results dict for this file
+                        # Update the status in results dict for this file
+                        for res in results:
+                            if res.get("filename") == filename and res.get("local_path") == local_save_path:
+                                res["status"] = "success_processing"
+                                res["message"] = "File processed successfully."
+                                break
                     else:
                         logger.error(f"Local processing failed for {filename} with code {proc.returncode}.")
                         logger.error(f"Stderr: {proc.stderr}")
                         logger.error(f"Stdout: {proc.stdout}")
-                        # Optionally update status
                         # Find the result entry for this file and update its message/status
                         for res in results:
                              if res.get("filename") == filename and res.get("local_path") == local_save_path:
                                  res["status"] = "error_processing"
                                  res["message"] = f"File saved locally, but processing failed (code {proc.returncode}). Check backend logs."
                                  break
-                                 
                 except subprocess.TimeoutExpired:
                      logger.error(f"Local processing timed out for {filename}.")
                      # Update status in results
@@ -761,20 +953,7 @@ async def direct_upload(
     # Return results of all uploads/saves
     return results
 
-# --- Helper Function for Admin Check ---
-def require_admin(current_user: models.User = Depends(get_current_user)):
-    """Dependency that raises HTTP 403 if the user is not an admin."""
-    if not current_user.role or current_user.role.lower() != 'admin':
-        logger.warning(f"Forbidden: Non-admin user {current_user.user_id} attempted admin action.")
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Admin privileges required for this action."
-        )
-    return current_user
-
 # --- Admin Group Management Endpoints ---
-tags_admin = ["Admin Management"]
-
 @app.post("/api/admin/groups", 
           response_model=models.GroupResponse, 
           tags=tags_admin,
@@ -1156,7 +1335,7 @@ async def get_all_workspace_group_assignments(
 # --- Add the query endpoint ---
 @app.post("/api/query",
           # response_model removed for streaming
-          tags=["Queries"],
+          tags=tags_queries,
           summary="Query the RAG system (Streaming)")
 async def query_documents_stream( # Renamed
     query_data: Dict[str, Any] = Body(..., description="Query data including text, workspace ID, and optional history"),
@@ -1181,18 +1360,29 @@ async def query_documents_stream( # Renamed
 
         # Verify workspace access (using a context manager for the session)
         connection_string = None
+        workspace_config = None
         try:
             with get_db_session() as conn:
+                # Fetch workspace existence, access, and config in one go
                 access_query = """
-                    SELECT 1 FROM workspaces w
+                    SELECT w.config_chunking_method, w.config_chunk_size, 
+                           w.config_chunk_overlap, w.config_similarity_metric,
+                           w.config_top_k, w.config_hybrid_search, w.config_embedding_model
+                    FROM workspaces w
                     LEFT JOIN workspace_group_access wga ON w.workspace_id = wga.workspace_id
                     LEFT JOIN user_group_memberships ugm ON wga.group_id = ugm.group_id AND ugm.user_id = %s
-                    WHERE w.workspace_id = %s AND (w.owner_user_id = %s OR ugm.user_id IS NOT NULL) LIMIT 1;
+                    WHERE w.workspace_id = %s AND (w.owner_user_id = %s OR ugm.user_id IS NOT NULL);
                 """
-                with conn.cursor() as cur:
-                    cur.execute(access_query, (current_user.user_id, workspace_id, current_user.user_id))
-                    if not cur.fetchone():
-                        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Workspace not found or you don't have access")
+                with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+                    cur.execute(access_query, (current_user.user_id, str(workspace_id), current_user.user_id))
+                    result = cur.fetchone()
+                    if not result:
+                        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, 
+                                          detail=f"Workspace not found or you don't have access")
+                    
+                    # Store workspace config
+                    workspace_config = dict(result)
+                    logger.info(f"Retrieved workspace config for query: {workspace_config}")
             
             # Get database connection string *after* session is closed
             if IS_LOCAL_DEV:
@@ -1216,12 +1406,19 @@ async def query_documents_stream( # Renamed
             raise HTTPException(status_code=500, detail="Database error during setup.")
 
         # Set defaults and overrides
-        embedding_model = query_data.get('embedding_model', 'text-multilingual-embedding-002')
-        top_k = query_data.get('top_k', 4)
+        # Use workspace config values as defaults, but allow query params to override
+        # Note: config_similarity_metric actually contains the embedding model name
+        embedding_model = query_data.get('embedding_model', workspace_config.get('config_similarity_metric'))
+        top_k = query_data.get('top_k', workspace_config.get('config_top_k', 4))
         # Let get_llm handle the default logic based on env var or fallback
         llm_model = query_data.get('model', None) 
         chat_history = query_data.get('chat_history', [])
-        temperature = query_data.get('temperature', 0.2)
+        temperature = query_data.get('temperature', 0.2) 
+        
+        # We retrieved hybrid_search setting but process_query_stream doesn't support it yet
+        # hybrid_search = query_data.get('hybrid_search', workspace_config.get('config_hybrid_search', False))
+        
+        logger.info(f"Using query params: embedding_model={embedding_model}, top_k={top_k}")
         
         # Correctly check if the imported function is available
         if not process_query_stream:
@@ -1259,5 +1456,126 @@ async def query_documents_stream( # Renamed
     except Exception as e:
         logger.error(f"Unexpected error setting up query stream: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to initiate query stream: {str(e)}")
+
+@app.get("/api/workspaces/{workspace_id}/files/count",
+         response_model=Dict[str, int],
+         tags=tags_workspaces,
+         summary="Get file count for a workspace")
+async def get_workspace_file_count(
+    workspace_id: uuid.UUID = Path(..., description="The UUID of the workspace"),
+    current_user: models.User = Depends(get_current_user)
+):
+    """
+    Retrieves the number of files/documents stored in a specific workspace.
+    - Returns count of documents associated with the workspace.
+    - User must have access to the workspace.
+    """
+    workspace_id_str = str(workspace_id) # Convert UUID to string for psycopg2
+    
+    # First check if user has access to the workspace
+    access_query = """
+        SELECT 1
+        FROM workspaces w
+        LEFT JOIN workspace_group_access wga ON w.workspace_id = wga.workspace_id
+        LEFT JOIN user_group_memberships ugm ON wga.group_id = ugm.group_id AND ugm.user_id = %s
+        WHERE w.workspace_id = %s AND (w.owner_user_id = %s OR ugm.user_id IS NOT NULL);
+    """
+    
+    # Query to count documents
+    count_query = """
+        SELECT COUNT(*) as file_count
+        FROM documents
+        WHERE workspace_id = %s;
+    """
+    
+    try:
+        with get_db_session() as conn:
+            # First verify access
+            with conn.cursor() as cur:
+                cur.execute(access_query, (current_user.user_id, workspace_id_str, current_user.user_id))
+                if not cur.fetchone():
+                    logger.warning(f"User {current_user.user_id} attempted to access file count for workspace {workspace_id_str} without permission")
+                    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, 
+                                        detail=f"Workspace not found or you don't have access")
+                
+                # Get file count
+                cur.execute(count_query, (workspace_id_str,))
+                result = cur.fetchone()
+                file_count = result[0] if result else 0
+                
+                logger.info(f"User {current_user.user_id} retrieved file count ({file_count}) for workspace {workspace_id_str}")
+                return {"count": file_count}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting file count for workspace {workspace_id_str}: {e}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            detail="Failed to retrieve file count.")
+
+@app.get("/api/workspaces/{workspace_id}/files",
+         response_model=List[Dict[str, Any]],
+         tags=tags_workspaces,
+         summary="Get files list for a workspace")
+async def get_workspace_files(
+    workspace_id: uuid.UUID = Path(..., description="The UUID of the workspace"),
+    current_user: models.User = Depends(get_current_user)
+):
+    """
+    Retrieves a list of files/documents stored in a specific workspace.
+    - Returns list of documents associated with the workspace.
+    - User must have access to the workspace.
+    """
+    workspace_id_str = str(workspace_id) # Convert UUID to string for psycopg2
+    
+    # First check if user has access to the workspace
+    access_query = """
+        SELECT 1
+        FROM workspaces w
+        LEFT JOIN workspace_group_access wga ON w.workspace_id = wga.workspace_id
+        LEFT JOIN user_group_memberships ugm ON wga.group_id = ugm.group_id AND ugm.user_id = %s
+        WHERE w.workspace_id = %s AND (w.owner_user_id = %s OR ugm.user_id IS NOT NULL);
+    """
+    
+    # Query to get documents
+    files_query = """
+        SELECT doc_id, filename, status, uploaded_at, metadata
+        FROM documents
+        WHERE workspace_id = %s
+        ORDER BY uploaded_at DESC;
+    """
+    
+    try:
+        with get_db_session() as conn:
+            # First verify access
+            with conn.cursor() as cur:
+                cur.execute(access_query, (current_user.user_id, workspace_id_str, current_user.user_id))
+                if not cur.fetchone():
+                    logger.warning(f"User {current_user.user_id} attempted to access files for workspace {workspace_id_str} without permission")
+                    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, 
+                                        detail=f"Workspace not found or you don't have access")
+                
+                # Get files
+                cur.execute(files_query, (workspace_id_str,))
+                results = cur.fetchall()
+                files = []
+                
+                column_names = [desc[0] for desc in cur.description]
+                for row in results:
+                    file_dict = dict(zip(column_names, row))
+                    # Convert any non-serializable objects
+                    if isinstance(file_dict.get('doc_id'), uuid.UUID):
+                        file_dict['doc_id'] = str(file_dict['doc_id'])
+                    if isinstance(file_dict.get('uploaded_at'), datetime.datetime):
+                        file_dict['uploaded_at'] = file_dict['uploaded_at'].isoformat()
+                    files.append(file_dict)
+                
+                logger.info(f"User {current_user.user_id} retrieved {len(files)} files for workspace {workspace_id_str}")
+                return files
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting files for workspace {workspace_id_str}: {e}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            detail="Failed to retrieve files list.")
 
 # --- End of file ---

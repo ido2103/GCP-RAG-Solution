@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field, EmailStr, validator
+from pydantic import BaseModel, Field, EmailStr, validator, root_validator
 from typing import Optional, Dict, Any, List
 import uuid
 from datetime import datetime
@@ -7,26 +7,46 @@ from datetime import datetime
 
 class WorkspaceCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100, description="Name of the workspace.")
-    # Set default chunking method to recursive
     config_chunking_method: str = Field("recursive", description="Chunking method (e.g., 'recursive', 'token')")
     config_chunk_size: int = Field(1000, gt=0, description="Target size for text chunks.")
     config_chunk_overlap: int = Field(100, ge=0, description="Overlap size between chunks.")
-    # Default similarity metric (embedding model related)
-    config_similarity_metric: str = Field("text-multilingual-embedding-002", description="Embedding model name or similarity type")
+    config_similarity_metric: str = Field("cosine", description="Vector search type (cosine, l2, inner)")
+    config_top_k: int = Field(4, gt=0, description="Default number of results to retrieve (Top K)")
+    config_hybrid_search: bool = Field(False, description="Enable hybrid search by default?")
+    config_embedding_model: str = Field("text-multilingual-embedding-002", description="Default embedding model name")
     # group_id: Optional[uuid.UUID] = Field(None, description="Optional: Group ID to associate with this workspace.")
 
+class WorkspaceConfigUpdate(BaseModel):
+    # Use Optional for updates, as not all fields might be sent
+    config_chunking_method: Optional[str] = Field(None, description="Chunking method (e.g., 'recursive', 'semantic')")
+    config_chunk_size: Optional[int] = Field(None, gt=0, description="Target size for text chunks.")
+    config_chunk_overlap: Optional[int] = Field(None, ge=0, description="Overlap size between chunks.")
+    config_similarity_metric: Optional[str] = Field(None, description="Vector search type (cosine, l2, inner)")
+    config_top_k: Optional[int] = Field(None, gt=0, description="Number of results to retrieve (Top K)")
+    config_hybrid_search: Optional[bool] = Field(None, description="Enable hybrid search?")
+    config_embedding_model: Optional[str] = Field(None, description="Embedding model name")
+
+    # Replace field validator with a root validator
+    @root_validator(pre=True)
+    def check_at_least_one_value(cls, values):
+        # Check if any field has a non-None value
+        if not any(value is not None for value in values.values()):
+            raise ValueError("At least one configuration field must be provided for update")
+        return values
 
 class WorkspaceResponse(BaseModel):
     workspace_id: uuid.UUID
     name: str
     owner_user_id: str
     created_at: datetime
-    config_chunking_method: str
-    config_chunk_size: int
-    config_chunk_overlap: int
-    config_similarity_metric: str
-    # Add groups field if you implement workspace-group association
-    # groups: Optional[List[GroupResponse]] = []
+    # Ensure all config fields from the DB are here
+    config_chunking_method: Optional[str] = None
+    config_chunk_size: Optional[int] = None
+    config_chunk_overlap: Optional[int] = None
+    config_similarity_metric: Optional[str] = None
+    config_top_k: Optional[int] = None
+    config_hybrid_search: Optional[bool] = None
+    config_embedding_model: Optional[str] = None
 
     class Config:
         from_attributes = True # Allows creating model from ORM objects (even dicts work well)

@@ -3,6 +3,8 @@ import WorkspaceSelector from './WorkspaceSelector';
 import '../App.css';
 import { getWorkspaces } from '../services/workspaceService';
 import { useAuth } from '../contexts/AuthContext'; // Import Auth context
+import ReactMarkdown from 'react-markdown'; // Import ReactMarkdown
+import remarkGfm from 'remark-gfm'; // Import remark-gfm plugin
 
 function ChatPage() {
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState(null);
@@ -238,7 +240,15 @@ function ChatPage() {
                     key={msg.id} 
                     className={`message ${msg.isUser ? 'user-message' : 'ai-message'} ${msg.isError ? 'error-message' : ''}`}
                   >
-                    <div className="message-content">{msg.text}</div>
+                    <div className="message-content">
+                      {msg.isUser ? (
+                        msg.text // Render user text directly
+                      ) : (
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                          {msg.text} 
+                        </ReactMarkdown> // Render AI text using ReactMarkdown
+                      )}
+                    </div>
                     {msg.processingTime && (
                       <div className="message-meta">זמן עיבוד: {msg.processingTime}ms</div>
                     )}

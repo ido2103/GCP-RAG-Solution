@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { getWorkspaces } from '../services/workspaceService';
 import '../App.css';
 
-function WorkspaceSelector({ selectedWorkspaceId, onSelectWorkspace }) {
+function WorkspaceSelector({ selectedWorkspaceId, onSelectWorkspace, refreshKey }) {
   const [workspaces, setWorkspaces] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -23,7 +23,7 @@ function WorkspaceSelector({ selectedWorkspaceId, onSelectWorkspace }) {
     };
 
     fetchWorkspaces();
-  }, []);
+  }, [refreshKey]);
 
   if (isLoading) {
     return <p>טוען סביבות עבודה...</p>;

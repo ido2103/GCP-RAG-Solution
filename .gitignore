@@ -179,3 +179,5 @@ Thumbs.db
 
 processing/${defaults.local_processing_base}/
 local_uploads/
+
+*.cursor

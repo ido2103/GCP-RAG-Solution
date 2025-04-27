@@ -36,5 +36,39 @@ const createWorkspace = async (workspaceData) => {
   }
 };
 
-export { getWorkspaces, createWorkspace };
+/**
+ * Gets the file count for a specific workspace.
+ * @param {string} workspaceId - The UUID of the workspace.
+ * @returns {Promise<number>} A promise that resolves to the number of files in the workspace.
+ */
+const getWorkspaceFileCount = async (workspaceId) => {
+  try {
+    // Call the backend endpoint
+    const response = await api.get(`/workspaces/${workspaceId}/files/count`);
+    return response.data.count;
+  } catch (error) {
+    console.error(`Error fetching file count for workspace ${workspaceId}:`, error.response?.data || error.message);
+    // Return 0 on error to avoid breaking the UI
+    return 0;
+  }
+};
+
+/**
+ * Gets the list of files for a specific workspace.
+ * @param {string} workspaceId - The UUID of the workspace.
+ * @returns {Promise<Array>} A promise that resolves to the list of files in the workspace.
+ */
+const getWorkspaceFiles = async (workspaceId) => {
+  try {
+    // Call the backend endpoint
+    const response = await api.get(`/workspaces/${workspaceId}/files`);
+    return response.data;
+  } catch (error) {
+    console.error(`Error fetching files for workspace ${workspaceId}:`, error.response?.data || error.message);
+    // Return empty array on error to avoid breaking the UI
+    return [];
+  }
+};
+
+export { getWorkspaces, createWorkspace, getWorkspaceFileCount, getWorkspaceFiles };
 

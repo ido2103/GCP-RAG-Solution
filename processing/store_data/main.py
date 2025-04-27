@@ -101,24 +101,49 @@ def store_embedded_documents(
                 })
                 
                 # --- Insert Document --- 
+                # First check if document with this path already exists
                 cur.execute(f"""
-                    INSERT INTO {documents_table}
-                    (workspace_id, user_id, filename, gcs_path, metadata)
-                    VALUES (%s, %s, %s, %s, %s)
-                    RETURNING doc_id;
-                """, (
-                    workspace_id,
-                    user_id,
-                    file_name, 
-                    source_path,  # use as gcs_path 
-                    json.dumps(doc_meta)
-                ))
-                doc_id_result = cur.fetchone() 
-                if not doc_id_result:
-                    logger.error(f"Failed to retrieve doc_id after inserting document for source: {source_path}")
-                    continue # Skip chunks if document insertion failed
-                actual_doc_id = doc_id_result[0]
-                logger.info(f"Inserted document {actual_doc_id} ('{file_name}') with source path: {source_path}")
+                    SELECT doc_id FROM {documents_table}
+                    WHERE gcs_path = %s AND workspace_id = %s;
+                """, (source_path, workspace_id))
+                existing_doc = cur.fetchone()
+                
+                if existing_doc:
+                    # Document exists - update it instead of inserting
+                    actual_doc_id = existing_doc[0]
+                    cur.execute(f"""
+                        UPDATE {documents_table}
+                        SET metadata = %s, user_id = %s, filename = %s
+                        WHERE doc_id = %s;
+                    """, (json.dumps(doc_meta), user_id, file_name, actual_doc_id))
+                    
+                    # Delete existing chunks for this document
+                    cur.execute(f"""
+                        DELETE FROM {chunks_table}
+                        WHERE doc_id = %s;
+                    """, (actual_doc_id,))
+                    
+                    logger.info(f"Updated existing document {actual_doc_id} ('{file_name}') with source path: {source_path}")
+                else:
+                    # Document doesn't exist - insert new
+                    cur.execute(f"""
+                        INSERT INTO {documents_table}
+                        (workspace_id, user_id, filename, gcs_path, metadata)
+                        VALUES (%s, %s, %s, %s, %s)
+                        RETURNING doc_id;
+                    """, (
+                        workspace_id,
+                        user_id,
+                        file_name, 
+                        source_path,  # use as gcs_path 
+                        json.dumps(doc_meta)
+                    ))
+                    doc_id_result = cur.fetchone() 
+                    if not doc_id_result:
+                        logger.error(f"Failed to retrieve doc_id after inserting document for source: {source_path}")
+                        continue # Skip chunks if document insertion failed
+                    actual_doc_id = doc_id_result[0]
+                    logger.info(f"Inserted new document {actual_doc_id} ('{file_name}') with source path: {source_path}")
                 
                 # --- Prepare Chunk Data --- 
                 chunk_values = []
