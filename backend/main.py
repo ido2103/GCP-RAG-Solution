@@ -12,6 +12,7 @@ import sys # Added for path manipulation
 import subprocess # Added for local processing trigger
 import shutil # Added for local file saving
 from dotenv import load_dotenv # Added for .env loading
+import json # Add this import at the top with other imports
 
 # --- Load Environment Variables FIRST ---
 # Construct the path to the root .env file (assuming backend is one level down)
@@ -1407,8 +1408,7 @@ async def query_documents_stream( # Renamed
 
         # Set defaults and overrides
         # Use workspace config values as defaults, but allow query params to override
-        # Note: config_similarity_metric actually contains the embedding model name
-        embedding_model = query_data.get('embedding_model', workspace_config.get('config_similarity_metric'))
+        embedding_model = query_data.get('embedding_model', workspace_config.get('config_embedding_model'))
         top_k = query_data.get('top_k', workspace_config.get('config_top_k', 4))
         # Let get_llm handle the default logic based on env var or fallback
         llm_model = query_data.get('model', None) 
@@ -1429,6 +1429,19 @@ async def query_documents_stream( # Renamed
         async def stream_generator():
             try:
                 logger.info(f"Starting stream for query '{query_data['query'][:30]}...' in workspace {workspace_id}")
+                
+                # Variables to collect debug metadata
+                debug_metadata = {
+                    "query": query_data['query'],
+                    "workspace_id": workspace_id,
+                    "embedding_model": embedding_model,
+                    "llm_model": llm_model,
+                    "top_k": top_k,
+                    "temperature": temperature,
+                    "start_time": datetime.datetime.now().isoformat(),
+                    "retrieved_chunks": []
+                }
+                
                 # Call the imported function directly
                 stream = process_query_stream(
                     query=query_data['query'],
@@ -1438,17 +1451,50 @@ async def query_documents_stream( # Renamed
                     model_name=llm_model,
                     top_k=top_k,
                     chat_history=chat_history,
-                    temperature=temperature
+                    temperature=temperature,
+                    collect_metadata=True  # Signal that we want to collect metadata
                 )
-                async for chunk in stream:
-                    yield chunk
+                
+                async for data in stream:
+                    # Check if this is a text chunk or metadata
+                    if isinstance(data, dict) and "metadata" in data:
+                        # Store retrieved chunk information
+                        if "retrieved_chunks" in data["metadata"]:
+                            debug_metadata["retrieved_chunks"] = data["metadata"]["retrieved_chunks"]
+                        # Store any other metadata
+                        for key, value in data["metadata"].items():
+                            if key != "retrieved_chunks":
+                                debug_metadata[key] = value
+                    else:
+                        # It's a normal text chunk - format as SSE message event
+                        yield f"event: message\ndata: {data}\n\n"
+                
+                # Add end time to metadata
+                debug_metadata["end_time"] = datetime.datetime.now().isoformat()
+                # Calculate total duration if not already provided
+                if "total_duration_ms" not in debug_metadata:
+                    start = datetime.datetime.fromisoformat(debug_metadata["start_time"])
+                    end = datetime.datetime.fromisoformat(debug_metadata["end_time"])
+                    debug_metadata["total_duration_ms"] = (end - start).total_seconds() * 1000
+                
+                # Send the debug metadata as a separate event after all text chunks
+                yield f"event: debug\ndata: {json.dumps(debug_metadata)}\n\n"
+                
                 logger.info(f"Finished stream for query '{query_data['query'][:30]}...' in workspace {workspace_id}")
             except Exception as stream_err:
                 logger.error(f"Error during response streaming: {stream_err}", exc_info=True)
-                yield f"\n\nStream Error: {stream_err}" 
+                # Send error as a message event
+                yield f"event: message\ndata: \n\nStream Error: {stream_err}\n\n"
+                # Send empty debug metadata with error information
+                error_metadata = {
+                    "error": str(stream_err),
+                    "query": query_data['query'],
+                    "workspace_id": workspace_id
+                }
+                yield f"event: debug\ndata: {json.dumps(error_metadata)}\n\n"
         
-        # Return the StreamingResponse
-        return StreamingResponse(stream_generator(), media_type="text/plain")
+        # Return the StreamingResponse with correct media type for SSE
+        return StreamingResponse(stream_generator(), media_type="text/event-stream")
 
     except HTTPException as http_ex:
         logger.error(f"HTTP Exception in query stream endpoint: {http_ex.detail}")

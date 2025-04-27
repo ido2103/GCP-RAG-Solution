@@ -158,7 +158,7 @@ class PgVectorRetriever(BaseRetriever, BaseModel):
                         "similarity": float(similarity), # Ensure float
                         "chunk_index": chunk_index,
                         "page_number": page_number,
-                        "document_info": doc_meta # Nest document info
+                        "document_info": doc_meta # Nest document info without trying to add string
                     }
                     
                     documents.append(Document(page_content=chunk_text, metadata=metadata))
@@ -236,7 +236,8 @@ def format_docs(docs: List[Document]) -> str:
         
         formatted_docs.append(formatted_doc)
     
-    return "\n\n".join(formatted_docs)
+    # Join with triple newlines for clearer separation between documents
+    return "\n\n\n".join(formatted_docs)
 
 # --- Format Chat History Function ---
 def format_chat_history(chat_history: List[Dict[str, any]]) -> str:
@@ -356,11 +357,34 @@ async def process_query_stream(
     search_type: str = "cosine",
     top_k: int = 4,
     temperature: float = 0.2,
-    chat_history: Optional[List[Dict[str, Any]]] = None
+    chat_history: Optional[List[Dict[str, Any]]] = None,
+    collect_metadata: bool = False  # Add parameter to control metadata collection
 ):
-    """Processes a query and yields response chunks asynchronously."""
+    """
+    Process a query against document chunks stored in PostgreSQL with pgvector, streaming the response.
+    
+    Args:
+        query: The query text to process.
+        workspace_id: UUID of the workspace to query against.
+        connection_string: PostgreSQL connection string.
+        embedding_model_name: Name of model to use for embeddings.
+        model_name: Name of model to use for generation.
+        table_prefix: Optional prefix for DB tables.
+        search_type: Vector search distance type ('cosine', 'l2', 'inner').
+        top_k: Number of document chunks to retrieve.
+        temperature: Temperature for text generation.
+        chat_history: Previous conversation messages.
+        collect_metadata: Whether to collect and return metadata for debugging.
+        
+    Returns:
+        Async generator yielding response text chunks and optionally metadata.
+    """
+    logger.info(f"Streaming query for workspace {workspace_id} (model: {model_name}, temp: {temperature})...")
     start_time = time.time()
+    metadata = {}
+    
     try:
+        # Initialize retriever
         retriever = PgVectorRetriever(
             connection_string=connection_string,
             embedding_model_name=embedding_model_name,
@@ -370,32 +394,95 @@ async def process_query_stream(
             top_k=top_k
         )
         
-        chain = await create_streaming_query_chain(retriever, model_name, temperature, chat_history)
+        # Create streaming chain
+        chain = await create_streaming_query_chain(
+            retriever, 
+            chat_history=chat_history, 
+            temperature=temperature
+        )
         
-        logger.info(f"Streaming query for workspace {workspace_id} (model: {model_name}, temp: {temperature})...")
+        # Start processing
+        retrieval_start = time.time()
+        # Get relevant docs first (we need them for debug info even if they get processed internally)
+        relevant_docs = retriever.get_relevant_documents(query)
+        retrieval_end = time.time()
         
-        # Prepare input dictionary for the chain
-        chain_input = {"question": query, "chat_history": chat_history or []}
+        # Build metadata about retrieved documents if collecting
+        if collect_metadata:
+            # Format document data for debug metadata
+            retrieved_chunks = []
+            for i, doc in enumerate(relevant_docs):
+                retrieved_chunks.append({
+                    "source": doc.metadata.get("file_name", "Unknown"),
+                    "chunk_index": doc.metadata.get("chunk_index", "?"),
+                    "similarity_score": doc.metadata.get("similarity", 0.0),
+                    "page_number": doc.metadata.get("page_number", "?"),
+                    "content_preview": doc.page_content # Send full content instead of preview
+                })
+                
+            # Gather metadata about the query and models
+            metadata = {
+                "embedding_model": embedding_model_name,
+                "llm_model": model_name,
+                "temperature": temperature,
+                "top_k": top_k,
+                "search_type": search_type,
+                "retrieval_duration_ms": round((retrieval_end - retrieval_start) * 1000, 2),
+                "retrieved_chunks": retrieved_chunks,
+            }
+            
+            # If there was chat history, include its size
+            if chat_history:
+                metadata["chat_history_messages"] = len(chat_history)
+                
+        # Use LangChain invoke with the string of docs and query
+        # Include already retrieved docs format in the debug metadata
+        input_data = {"question": query}
+        if chat_history:
+            input_data["chat_history"] = chat_history
+            
+        # Log the input data that will be processed (useful for debugging)
+        formatted_context = format_docs(relevant_docs)
+        rewritten_question = None
         
-        async for chunk in chain.astream(chain_input):
-            # Assuming the chunk is directly the string output from the LLM
-            if isinstance(chunk, str):
-                yield chunk
-            else:
-                # Handle potential other types of chunks if necessary (e.g., AIMessageChunk)
-                content = getattr(chunk, 'content', None)
-                if content and isinstance(content, str):
-                    yield content
-                else:
-                     logger.warning(f"Received unexpected chunk type: {type(chunk)}")
-
-        processing_time_ms = int((time.time() - start_time) * 1000)
-        logger.info(f"Query stream finished in {processing_time_ms} ms.")
-
+        # Invoke the streaming chain
+        async for chunk in chain.astream(input_data):
+            # Yield chunks for the client
+            yield chunk
+        
+        # Calculate total duration
+        total_duration = time.time() - start_time
+        
+        # Log processing duration and send as metadata after text completion
+        logger.info(f"Query stream finished in {int(total_duration * 1000)} ms.")
+        
+        if collect_metadata:
+            # Add final processing information to metadata
+            metadata["total_duration_ms"] = round(total_duration * 1000, 2)
+            
+            # For debugging: add the formatted context and rewritten question
+            debug_info = {}
+            debug_info["formatted_context"] = formatted_context
+            debug_info["rewritten_question"] = rewritten_question  # May be None depending on chain
+            metadata["debug_info"] = debug_info
+            
+            # Yield metadata as a separate object with a flag
+            yield {"metadata": metadata}
+            
     except Exception as e:
-        logger.error(f"Error during query streaming: {str(e)}", exc_info=True)
-        # Yield an error message chunk
-        yield f"Error: Query processing failed - {str(e)}"
+        error_msg = f"Error during query processing: {str(e)}"
+        logger.error(error_msg, exc_info=True)
+        
+        # Return error info both as text and metadata if requested
+        yield f"Error: {str(e)}"
+        
+        if collect_metadata:
+            error_metadata = {
+                "error": str(e),
+                "error_type": type(e).__name__,
+                "total_duration_ms": round((time.time() - start_time) * 1000, 2)
+            }
+            yield {"metadata": error_metadata}
 
 # Keep the original non-streaming function for potential other uses or testing
 def process_query(

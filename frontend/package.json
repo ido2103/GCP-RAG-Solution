@@ -15,8 +15,10 @@
     "jwt-decode": "^4.0.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
+    "react-json-tree": "^0.20.0",
     "react-markdown": "^9.0.1",
     "react-router-dom": "^7.5.1",
+    "react-tabs": "^6.0.2",
     "remark-gfm": "^4.0.0"
   },
   "devDependencies": {

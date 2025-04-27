@@ -5,6 +5,30 @@ import { getWorkspaces } from '../services/workspaceService';
 import { useAuth } from '../contexts/AuthContext'; // Import Auth context
 import ReactMarkdown from 'react-markdown'; // Import ReactMarkdown
 import remarkGfm from 'remark-gfm'; // Import remark-gfm plugin
+import { Tab, Tabs, TabList, TabPanel } from 'react-tabs';
+import 'react-tabs/style/react-tabs.css'; // Import the basic styles
+import { JSONTree } from 'react-json-tree';
+
+// JSON tree theme - dark mode friendly
+const jsonTreeTheme = {
+  scheme: 'monokai',
+  base00: '#272822', // background
+  base01: '#383830',
+  base02: '#49483e',
+  base03: '#75715e', // comments, invisibles, line highlighting
+  base04: '#a59f85', // dark foreground (used for status bars)
+  base05: '#f8f8f2', // default foreground, caret, delimiters, operators
+  base06: '#f5f4f1',
+  base07: '#f9f8f5', // light foreground
+  base08: '#f92672', // variables, XML tags, markup link text, markup lists
+  base09: '#fd971f', // integers, boolean, constants, XML attributes, markup link url
+  base0A: '#f4bf75', // classes, markup bold, search text background
+  base0B: '#a6e22e', // strings, inherited class, markup code, diff inserted
+  base0C: '#a1efe4', // support, regular expressions, escape characters, markup quotes
+  base0D: '#66d9ef', // functions, methods, attribute IDs, headings
+  base0E: '#ae81ff', // keywords, storage, selector, markup italic, diff changed
+  base0F: '#cc6633'  // deprecated, opening/closing embedded language tags
+};
 
 function ChatPage() {
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState(null);
@@ -17,9 +41,57 @@ function ChatPage() {
   const [messages, setMessages] = useState([]);
   const [isQueryLoading, setIsQueryLoading] = useState(false);
   const [error, setError] = useState(null);
+  
+  // Metadata modal state
+  const [isMetadataModalOpen, setIsMetadataModalOpen] = useState(false);
+  const [currentMetadata, setCurrentMetadata] = useState(null);
+  const [selectedTab, setSelectedTab] = useState(0);
 
   // Get authentication state directly from context
-  const { idToken, currentUser } = useAuth(); // Get idToken and currentUser
+  const { idToken, currentUser, userRole } = useAuth(); // Get idToken, currentUser, and userRole
+  
+  // Check if user is admin using userRole from context
+  const isAdmin = userRole === 'admin';
+
+  // Function to open metadata modal
+  const openMetadataModal = (metadata) => {
+    setCurrentMetadata(metadata);
+    setIsMetadataModalOpen(true);
+    setSelectedTab(0); // Reset to first tab when opening
+  };
+
+  // Function to close metadata modal
+  const closeMetadataModal = () => {
+    setIsMetadataModalOpen(false);
+    setCurrentMetadata(null);
+  };
+  
+  // Helper function to format time (ms to readable format)
+  const formatTime = (timeMs) => {
+    if (timeMs < 1000) return `${timeMs}ms`;
+    return `${(timeMs / 1000).toFixed(2)}s`;
+  };
+
+  // Helper function to extract overview data from metadata
+  const getOverviewData = (metadata) => {
+    if (!metadata) return null;
+    
+    return {
+      query: metadata.query || 'Unknown query',
+      totalDuration: metadata.total_duration_ms ? formatTime(metadata.total_duration_ms) : 'Unknown',
+      retrievalDuration: metadata.retrieval_duration_ms ? formatTime(metadata.retrieval_duration_ms) : 'Unknown',
+      embeddingModel: metadata.embedding_model || 'Unknown',
+      llmModel: metadata.llm_model || 'Unknown',
+      temperature: metadata.temperature ?? 'Unknown',
+      topK: metadata.top_k ?? 'Unknown',
+    };
+  };
+
+  // Helper function to extract and format documents from metadata
+  const getDocumentsData = (metadata) => {
+    if (!metadata || !metadata.retrieved_chunks) return [];
+    return metadata.retrieved_chunks;
+  };
 
   // Fetch all workspaces to be able to lookup names
   useEffect(() => {
@@ -107,12 +179,16 @@ function ChatPage() {
     setIsQueryLoading(true);
     setError(null);
 
+    // Use AbortController to handle cancellation of the request if needed
+    const abortController = new AbortController();
+    const { signal } = abortController;
+
     try {
       if (!idToken) {
         throw new Error('אימות משתמש לא זמין (Token not found)');
       }
 
-      // Send query and history to backend
+      // Send query and history to backend as POST request
       const response = await fetch('/api/query', {
         method: 'POST',
         headers: {
@@ -125,6 +201,7 @@ function ChatPage() {
           chat_history: historyForPrompt,
           temperature: 0.3 // Keep temperature setting for now
         }),
+        signal: signal // Add abort signal to the fetch request
       });
 
       if (!response.ok) {
@@ -136,30 +213,81 @@ function ChatPage() {
         throw new Error("Response body is null, cannot stream.");
       }
 
-      // Handle the stream
+      // Set up SSE parsing
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
-      let streamingDone = false;
       let currentAiText = '';
+      let buffer = ''; // Buffer for incomplete SSE messages
 
-      while (!streamingDone) {
+      while (true) {
         const { value, done } = await reader.read();
-        streamingDone = done;
-        if (value) {
-          const chunk = decoder.decode(value, { stream: true });
-          currentAiText += chunk;
+        if (done) break;
+        
+        // Decode the chunk and add to buffer
+        const chunk = decoder.decode(value, { stream: true });
+        buffer += chunk;
+        
+        // Process complete SSE messages from buffer
+        const lines = buffer.split('\n\n');
+        // Keep the last potentially incomplete message in the buffer
+        buffer = lines.pop() || '';
+        
+        for (const line of lines) {
+          if (!line.trim()) continue; // Skip empty lines
           
-          // Update the placeholder message with the new chunk
-          setMessages(prevMessages => 
-            prevMessages.map(msg => 
-              msg.id === aiPlaceholderMessage.id 
-                ? { ...msg, text: currentAiText, isLoading: false } // Update text, mark as not loading
-                : msg
-            )
-          );
+          // Parse SSE message: format is "event: type\ndata: content"
+          const eventMatch = line.match(/^event: (.+)$/m);
+          const dataMatch = line.match(/^data: (.+)$/m);
+          
+          if (!eventMatch || !dataMatch) {
+            continue;
+          }
+          
+          const eventType = eventMatch[1];
+          const eventData = dataMatch[1];
+          
+          if (eventType === 'message') {
+            // Handle text chunk
+            currentAiText += eventData;
+            
+            // Update the placeholder message with the new text
+            setMessages(prevMessages => 
+              prevMessages.map(msg => 
+                msg.id === aiPlaceholderMessage.id 
+                  ? { ...msg, text: currentAiText, isLoading: false } 
+                  : msg
+              )
+            );
+          } else if (eventType === 'debug') {
+            // Handle debug metadata
+            try {
+              const debugMetadata = JSON.parse(eventData);
+              
+              // Update the message with the full metadata object and processing time
+              setMessages(prevMessages => {
+                return prevMessages.map(msg => 
+                  msg.id === aiPlaceholderMessage.id 
+                    ? { 
+                        ...msg, 
+                        // Store the entire metadata object
+                        metadata: debugMetadata, 
+                        // Also store processing time directly for convenience
+                        processingTime: debugMetadata.total_duration_ms 
+                                        ? Math.round(debugMetadata.total_duration_ms)
+                                        : undefined,
+                        isLoading: false 
+                      } 
+                    : msg
+                );
+              });
+            } catch (err) {
+              console.error("Error parsing debug metadata:", err);
+            }
+          }
         }
       }
-      // Final update to ensure loading state is false if stream ends abruptly
+      
+      // Final update to ensure loading state is false if stream ends
       setMessages(prevMessages => 
         prevMessages.map(msg => 
           msg.id === aiPlaceholderMessage.id 
@@ -249,9 +377,20 @@ function ChatPage() {
                         </ReactMarkdown> // Render AI text using ReactMarkdown
                       )}
                     </div>
-                    {msg.processingTime && (
-                      <div className="message-meta">זמן עיבוד: {msg.processingTime}ms</div>
-                    )}
+                    <div className="message-footer">
+                      {msg.processingTime && (
+                        <div className="message-meta">זמן עיבוד: {msg.processingTime}ms</div>
+                      )}
+                      {/* Display metadata button only for admin users and if metadata exists */}
+                      {isAdmin && !msg.isUser && msg.metadata && (
+                        <button 
+                          className="metadata-button"
+                          onClick={() => openMetadataModal(msg.metadata || {})}
+                        >
+                          צפה במטה-דאטה
+                        </button>
+                      )}
+                    </div>
                   </div>
                 ))
               )}
@@ -286,6 +425,120 @@ function ChatPage() {
           </>
         )}
       </div>
+      
+      {/* Enhanced Metadata Modal with Tabs */}
+      {isMetadataModalOpen && currentMetadata && (
+        <div className="metadata-modal-overlay" onClick={closeMetadataModal}>
+          <div className="metadata-modal" onClick={(e) => e.stopPropagation()}>
+            <h3 className="metadata-modal-header">מטה-דאטה שאילתה</h3>
+            
+            <Tabs className="metadata-tabs" selectedIndex={selectedTab} onSelect={index => setSelectedTab(index)}>
+              <TabList className="metadata-tab-list">
+                <Tab className="metadata-tab">סקירה כללית</Tab>
+                <Tab className="metadata-tab">מסמכים שאוחזרו</Tab>
+                <Tab className="metadata-tab">נתונים מלאים</Tab>
+              </TabList>
+
+              {/* Overview Tab */}
+              <TabPanel className="metadata-tab-panel">
+                <div className="metadata-overview">
+                  {currentMetadata && (
+                    <div className="overview-grid">
+                      <div className="overview-item">
+                        <div className="overview-label">שאילתה</div>
+                        <div className="overview-value">{currentMetadata.query || 'לא זמין'}</div>
+                      </div>
+                      
+                      <div className="overview-item">
+                        <div className="overview-label">זמן עיבוד כולל</div>
+                        <div className="overview-value highlight">
+                          {currentMetadata.total_duration_ms ? formatTime(currentMetadata.total_duration_ms) : 'לא זמין'}
+                        </div>
+                      </div>
+                      
+                      <div className="overview-item">
+                        <div className="overview-label">זמן אחזור</div>
+                        <div className="overview-value">
+                          {currentMetadata.retrieval_duration_ms ? formatTime(currentMetadata.retrieval_duration_ms) : 'לא זמין'}
+                        </div>
+                      </div>
+                      
+                      <div className="overview-item">
+                        <div className="overview-label">מודל אמבדינג</div>
+                        <div className="overview-value">{currentMetadata.embedding_model || 'לא זמין'}</div>
+                      </div>
+                      
+                      <div className="overview-item">
+                        <div className="overview-label">מודל שפה</div>
+                        <div className="overview-value">{currentMetadata.llm_model || 'לא זמין'}</div>
+                      </div>
+                      
+                      <div className="overview-item">
+                        <div className="overview-label">טמפרטורה</div>
+                        <div className="overview-value">{currentMetadata.temperature ?? 'לא זמין'}</div>
+                      </div>
+                      
+                      <div className="overview-item">
+                        <div className="overview-label">מספר קטעים</div>
+                        <div className="overview-value">{currentMetadata.top_k ?? 'לא זמין'}</div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </TabPanel>
+
+              {/* Retrieved Chunks Tab */}
+              <TabPanel className="metadata-tab-panel">
+                <div className="metadata-chunks">
+                  {currentMetadata && currentMetadata.retrieved_chunks ? (
+                    currentMetadata.retrieved_chunks.length > 0 ? (
+                      <div className="chunks-list">
+                        {currentMetadata.retrieved_chunks.map((chunk, index) => (
+                          <div className="chunk-item" key={index}>
+                            <div className="chunk-header">
+                              <div className="chunk-title">מסמך {index + 1}: {chunk.source}</div>
+                              <div className="chunk-score">
+                                ציון רלוונטיות: <span className="highlight">{(100 - chunk.similarity_score * 100).toFixed(1)}%</span>
+                              </div>
+                            </div>
+                            <div className="chunk-metadata">
+                              <span>עמוד: {chunk.page_number}</span>
+                              <span>מקטע: {chunk.chunk_index}</span>
+                            </div>
+                            <div className="chunk-content">
+                              <div className="content-label">תוכן:</div>
+                              <div className="content-preview">{chunk.content_preview}</div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="empty-state">לא נמצאו מסמכים רלוונטיים</div>
+                    )
+                  ) : (
+                    <div className="empty-state">נתוני מסמכים אינם זמינים</div>
+                  )}
+                </div>
+              </TabPanel>
+
+              {/* Raw Data Tab */}
+              <TabPanel className="metadata-tab-panel">
+                <div className="metadata-json">
+                  <JSONTree 
+                    data={currentMetadata} 
+                    theme={jsonTreeTheme}
+                    invertTheme={false}
+                    shouldExpandNode={() => false} // Start collapsed
+                    hideRoot={false}
+                  />
+                </div>
+              </TabPanel>
+            </Tabs>
+            
+            <button className="close-modal-button" onClick={closeMetadataModal}>סגור</button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
