@@ -286,11 +286,16 @@ async def create_streaming_query_chain(
 
     ספק תשובה **מלאה ומפורטת**, הכוללת את **כל** הנקודות הרלוונטיות שנמצאו במסמכים.
 
-    אם קיימות מספר הגבלות, תנאים או נקודות רלוונטיות בתגובה לשאלה, אנא פרט את כולן ברשימה ברורה.
+    אם קיימות מספר הגבלות, תנאים או נקודות רלוונטיות בתגובה לשאלה, אנא פרט אותן ברשימה ברורה.
 
     שים לב להסטוריה של השיחה והשאלות של המשתמש והתשובות שלך כדי להסיק מסקנות ולענות בצורה מדויקת ומספקת.
 
-    שים לב, התשובה שלך תוצג באתר שתומך ב "React Markdown" ולכן יש להתחשב בכך בכתיבת התשובה (אם רלוונטי).
+    הנחיות לניסוח ופורמט:
+    1. השתמש בפורמט Markdown פשוט וברור. 
+    2. בעת יצירת כותרות, השתמש ב-'#' במקום כוכביות (**).
+    3. לרשימות, השתמש ב-'-' ולא ב-'*' כדי ליצור תבליטים.
+    4. הימנע מכוכביות (**) ככל האפשר בסימון טקסט מודגש - במקום זה השתמש בגרשיים לציון מושגים חשובים.
+    5. השאר רווחים ברורים בין פסקאות כדי לשפר את הקריאות.
 
     תשובה:"""
     ANSWER_PROMPT = ChatPromptTemplate.from_template(ANSWER_TEMPLATE)
@@ -444,17 +449,19 @@ async def process_query_stream(
         # Log the input data that will be processed (useful for debugging)
         formatted_context = format_docs(relevant_docs)
         rewritten_question = None
-        
+        model_response = ""
         # Invoke the streaming chain
         async for chunk in chain.astream(input_data):
             # Yield chunks for the client
             yield chunk
+            model_response += chunk
         
         # Calculate total duration
         total_duration = time.time() - start_time
         
         # Log processing duration and send as metadata after text completion
         logger.info(f"Query stream finished in {int(total_duration * 1000)} ms.")
+        logger.info(f"Model response: {model_response}")
         
         if collect_metadata:
             # Add final processing information to metadata

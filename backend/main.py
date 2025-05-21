@@ -28,7 +28,7 @@ IS_LOCAL_DEV = os.getenv("LOCAL_DEV", "false").lower() == "true"
 print(f"--- Running in LOCAL_DEV mode: {IS_LOCAL_DEV} ---")
 
 # --- FastAPI Imports ---
-from fastapi import FastAPI, Depends, HTTPException, status, Path, Query, File, UploadFile, Form, Body
+from fastapi import FastAPI, Depends, HTTPException, status, Path, Query, File, UploadFile, Form, Body, Response # Added Response
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.responses import StreamingResponse
 import asyncio # Import asyncio for the stream generator
@@ -41,7 +41,7 @@ from psycopg2 import pool # Although pool is used in db.py, importing here can b
 # --- Google Cloud Imports ---
 
 # --- Configuration Loading ---
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 # Conditionally import storage client
@@ -230,17 +230,32 @@ if not firebase_admin._apps:
     try:
         if os.path.exists(firebase_cred_path):
             firebase_cred = credentials.Certificate(firebase_cred_path)
-            firebase_admin.initialize_app(firebase_cred)
-            logger.info(f"Firebase Admin SDK initialized with service account: {firebase_cred_path}")
+            # Get project ID from environment
+            project_id = os.getenv("GCP_PROJECT_ID")
+            if not project_id:
+                logger.warning("GCP_PROJECT_ID not set in environment variables")
+            # Initialize with both credentials and project ID
+            firebase_admin.initialize_app(firebase_cred, {'projectId': project_id})
+            logger.info(f"Firebase Admin SDK initialized with service account: {firebase_cred_path} and project ID: {project_id}")
         else:
              logger.warning(f"Firebase service account key not found at {firebase_cred_path}. Trying default credentials.")
-             firebase_admin.initialize_app()
-             logger.info("Firebase Admin SDK initialized with default credentials (ADC or environment). Potential permission issues if ADC isn't set correctly.")
+             # Get project ID from environment
+             project_id = os.getenv("GCP_PROJECT_ID")
+             if not project_id:
+                 logger.warning("GCP_PROJECT_ID not set in environment variables")
+             # Initialize with project ID
+             firebase_admin.initialize_app(options={'projectId': project_id})
+             logger.info("Firebase Admin SDK initialized with default credentials and project ID: {project_id}")
     except Exception as e:
          logger.warning(f"Failed to initialize Firebase with explicit credentials at {firebase_cred_path}: {e}. Falling back to default credentials.")
          try:
-             firebase_admin.initialize_app()
-             logger.info("Firebase Admin SDK initialized with default credentials (ADC or environment). Potential permission issues if ADC isn't set correctly.")
+             # Get project ID from environment
+             project_id = os.getenv("GCP_PROJECT_ID")
+             if not project_id:
+                 logger.warning("GCP_PROJECT_ID not set in environment variables")
+             # Initialize with project ID
+             firebase_admin.initialize_app(options={'projectId': project_id})
+             logger.info("Firebase Admin SDK initialized with default credentials and project ID: {project_id}")
          except Exception as default_e:
               logger.error(f"FATAL: Failed to initialize Firebase Admin SDK with both explicit and default credentials: {default_e}")
               # Depending on criticality, you might raise an error here to stop startup
@@ -1465,34 +1480,42 @@ async def query_documents_stream( # Renamed
                         for key, value in data["metadata"].items():
                             if key != "retrieved_chunks":
                                 debug_metadata[key] = value
+                        # Metadata itself will be sent at the end as a single debug event
+                    elif isinstance(data, str):
+                        # It's a normal text chunk - yield correctly formatted SSE message
+                        yield sse_event("message", data)
                     else:
-                        # It's a normal text chunk - format as SSE message event
-                        yield f"event: message\ndata: {data}\n\n"
-                
+                        # Log unexpected data type from stream
+                        logger.warning(f"Received unexpected data type from stream: {type(data)} - {data}")
+
                 # Add end time to metadata
                 debug_metadata["end_time"] = datetime.datetime.now().isoformat()
                 # Calculate total duration if not already provided
-                if "total_duration_ms" not in debug_metadata:
-                    start = datetime.datetime.fromisoformat(debug_metadata["start_time"])
-                    end = datetime.datetime.fromisoformat(debug_metadata["end_time"])
-                    debug_metadata["total_duration_ms"] = (end - start).total_seconds() * 1000
-                
-                # Send the debug metadata as a separate event after all text chunks
-                yield f"event: debug\ndata: {json.dumps(debug_metadata)}\n\n"
-                
+                if "total_duration_ms" not in debug_metadata and "start_time" in debug_metadata:
+                    try:
+                        start = datetime.datetime.fromisoformat(debug_metadata["start_time"])
+                        end = datetime.datetime.fromisoformat(debug_metadata["end_time"])
+                        debug_metadata["total_duration_ms"] = round((end - start).total_seconds() * 1000, 2)
+                    except ValueError:
+                        logger.warning("Could not calculate duration from isoformat times.")
+
+                # Yield the complete debug metadata as a single event at the end
+                yield sse_event("debug", json.dumps(debug_metadata))
+
                 logger.info(f"Finished stream for query '{query_data['query'][:30]}...' in workspace {workspace_id}")
             except Exception as stream_err:
                 logger.error(f"Error during response streaming: {stream_err}", exc_info=True)
-                # Send error as a message event
-                yield f"event: message\ndata: \n\nStream Error: {stream_err}\n\n"
-                # Send empty debug metadata with error information
+                # Send error as a message event (using the helper)
+                yield sse_event("message", f"\n\nStream Error: {stream_err}")
+                # Send error metadata (using the helper)
                 error_metadata = {
                     "error": str(stream_err),
+                    "error_type": type(stream_err).__name__,
                     "query": query_data['query'],
                     "workspace_id": workspace_id
                 }
-                yield f"event: debug\ndata: {json.dumps(error_metadata)}\n\n"
-        
+                yield sse_event("debug", json.dumps(error_metadata))
+
         # Return the StreamingResponse with correct media type for SSE
         return StreamingResponse(stream_generator(), media_type="text/event-stream")
 
@@ -1624,4 +1647,110 @@ async def get_workspace_files(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                             detail="Failed to retrieve files list.")
 
+# --- File Deletion Endpoint (Admin Only) ---
+@app.delete("/api/workspaces/{workspace_id}/files/{doc_id}",
+            status_code=status.HTTP_204_NO_CONTENT,
+            tags=[tags_uploads, tags_admin],
+            summary="Delete a specific document and its chunks (Admin Only)",
+            description="Deletes a document record, its associated chunks from the database, and attempts to delete the corresponding file from local storage if LOCAL_DEV is true. Requires admin privileges.")
+async def delete_document(
+    workspace_id: uuid.UUID = Path(..., description="The UUID of the workspace containing the document"),
+    doc_id: uuid.UUID = Path(..., description="The UUID of the document to delete"),
+    current_user: models.User = Depends(require_admin) # Ensure only admins can delete
+    # Removed db_conn=Depends(db.get_db_connection)
+):
+    """Deletes a document and its chunks from the database and storage."""
+    
+    workspace_id_str = str(workspace_id)
+    doc_id_str = str(doc_id)
+    local_file_path_to_delete = None
+    filename = "[unknown]" # Default filename for logging
+    # Assume LOCAL_UPLOADS_BASE is defined similar to LOCAL_STORAGE_PATH
+    LOCAL_UPLOADS_BASE = LOCAL_STORAGE_PATH
+
+    logger.info(f"Admin {current_user.user_id} attempting to delete document {doc_id_str} from workspace {workspace_id_str}")
+
+    # Use get_db_session context manager for transaction and connection handling
+    try:
+        with get_db_session() as db_conn: # Use the context manager
+            with db_conn.cursor() as cursor:
+                # 1. Find the document and its path
+                cursor.execute(
+                    "SELECT gcs_path, filename FROM documents WHERE doc_id = %s AND workspace_id = %s",
+                    (doc_id_str, workspace_id_str)
+                )
+                doc_info = cursor.fetchone()
+
+                if not doc_info:
+                    # Raise inside the context manager so rollback happens
+                    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                                        detail=f"Document {doc_id_str} not found in workspace {workspace_id_str}.")
+                    
+                doc_path, filename = doc_info # Get filename for logging
+                logger.info(f"Found document '{filename}' with path: {doc_path}")
+                
+                # Determine local file path
+                if IS_LOCAL_DEV and doc_path:
+                    local_file_path_to_delete = doc_path
+                    logger.info(f"Determined local file path for potential deletion: {local_file_path_to_delete}")
+                elif IS_LOCAL_DEV and not doc_path:
+                    logger.warning(f"Document {doc_id_str} has null path. Cannot determine local file path for deletion.")
+
+                # 2. Delete associated chunks
+                cursor.execute("DELETE FROM chunks WHERE doc_id = %s", (doc_id_str,))
+                deleted_chunks_count = cursor.rowcount
+                logger.info(f"Deleted {deleted_chunks_count} chunks associated with document {doc_id_str}")
+
+                # 3. Delete the document record
+                cursor.execute("DELETE FROM documents WHERE doc_id = %s", (doc_id_str,))
+                deleted_docs_count = cursor.rowcount
+                if deleted_docs_count == 0:
+                    logger.warning(f"Document {doc_id_str} was not found for deletion after deleting chunks.")
+                    # Rollback will happen automatically due to exception
+                    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document disappeared during deletion process.")
+            
+            # Commit happens automatically when exiting the 'with get_db_session()' block if no exceptions
+        
+        # 4. Attempt to delete the file from local storage (AFTER DB transaction)
+        if local_file_path_to_delete:
+            try:
+                if os.path.exists(local_file_path_to_delete):
+                    os.remove(local_file_path_to_delete)
+                    logger.info(f"Successfully deleted local file: {local_file_path_to_delete}")
+                else:
+                    logger.warning(f"Local file not found, skipping deletion: {local_file_path_to_delete}")
+            except OSError as os_err:
+                # Log error but don't fail the request, as DB entry is gone
+                logger.error(f"Error deleting local file {local_file_path_to_delete}: {os_err}")
+
+        # --- Placeholder for GCS deletion --- 
+        # Similar logic here, outside the DB transaction
+
+        logger.info(f"Successfully completed deletion process for document {doc_id_str} ('{filename}') from workspace {workspace_id_str}")
+        
+        # Return No Content on success
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    except HTTPException as http_exc:
+        # Logged inside get_db_session or here if raised before DB op
+        logger.error(f"HTTP error during deletion of doc {doc_id_str}: {http_exc.detail}")
+        raise http_exc # Re-raise specific HTTP exceptions
+    except Exception as e:
+        # General errors (including potential DB errors caught by get_db_session)
+        logger.error(f"Unexpected error deleting document {doc_id_str}: {e}", exc_info=True)
+        # Let get_db_session handle rollback
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="An unexpected server error occurred during deletion.")
+
 # --- End of file ---
+
+# --- Helper Function for Correct SSE Formatting ---
+def sse_event(event_type: str, data: str) -> str:
+    """
+    Build a correctly framed SSE event.
+    Every line must start with 'data:' (even empty lines).
+    Handles multi-line data correctly.
+    """
+    # splitlines() handles different newline types and removes trailing newline
+    data_lines = data.splitlines() or ['']  # Ensure at least one 'data:' line for empty data
+    payload = '\n'.join(f"data: {line}" for line in data_lines)
+    return f"event: {event_type}\n{payload}\n\n"

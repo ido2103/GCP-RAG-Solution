@@ -70,5 +70,27 @@ const getWorkspaceFiles = async (workspaceId) => {
   }
 };
 
-export { getWorkspaces, createWorkspace, getWorkspaceFileCount, getWorkspaceFiles };
+/**
+ * Deletes a specific file (document) from a workspace.
+ * Requires admin privileges on the backend.
+ * @param {string} workspaceId - The UUID of the workspace.
+ * @param {string} docId - The UUID of the document to delete.
+ * @returns {Promise<void>} A promise that resolves on successful deletion.
+ */
+const deleteWorkspaceFile = async (workspaceId, docId) => {
+  if (!workspaceId || !docId) {
+    throw new Error("Workspace ID and Document ID are required for deletion.");
+  }
+  try {
+    // Call the backend DELETE endpoint
+    await api.delete(`/workspaces/${workspaceId}/files/${docId}`);
+    // No data is returned on successful DELETE (204 No Content)
+  } catch (error) {
+    console.error(`Error deleting file ${docId} from workspace ${workspaceId}:`, error.response?.data || error.message);
+    const detail = error.response?.data?.detail || error.message || "Failed to delete file.";
+    throw new Error(detail);
+  }
+};
+
+export { getWorkspaces, createWorkspace, getWorkspaceFileCount, getWorkspaceFiles, deleteWorkspaceFile };
 

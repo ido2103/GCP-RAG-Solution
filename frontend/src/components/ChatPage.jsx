@@ -205,7 +205,6 @@ function ChatPage() {
       });
 
       if (!response.ok) {
-        // Handle non-streaming errors (e.g., 4xx, 5xx before stream starts)
         const errorData = await response.json().catch(() => ({ detail: `HTTP error ${response.status}` }));
         throw new Error(errorData.detail || `שגיאת שרת: ${response.status}`);
       }
@@ -213,85 +212,126 @@ function ChatPage() {
         throw new Error("Response body is null, cannot stream.");
       }
 
-      // Set up SSE parsing
+      // Revised SSE parsing implementation
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
-      let currentAiText = '';
-      let buffer = ''; // Buffer for incomplete SSE messages
+      let buffer = ''; // Buffer for incoming data
+      let currentAiText = ''; // Accumulator for the final text
+      let metadata = null; // Store metadata if received
 
       while (true) {
         const { value, done } = await reader.read();
         if (done) break;
-        
-        // Decode the chunk and add to buffer
-        const chunk = decoder.decode(value, { stream: true });
-        buffer += chunk;
-        
-        // Process complete SSE messages from buffer
-        const lines = buffer.split('\n\n');
-        // Keep the last potentially incomplete message in the buffer
-        buffer = lines.pop() || '';
-        
-        for (const line of lines) {
-          if (!line.trim()) continue; // Skip empty lines
-          
-          // Parse SSE message: format is "event: type\ndata: content"
-          const eventMatch = line.match(/^event: (.+)$/m);
-          const dataMatch = line.match(/^data: (.+)$/m);
-          
-          if (!eventMatch || !dataMatch) {
-            continue;
-          }
-          
-          const eventType = eventMatch[1];
-          const eventData = dataMatch[1];
-          
-          if (eventType === 'message') {
-            // Handle text chunk
-            currentAiText += eventData;
-            
-            // Update the placeholder message with the new text
-            setMessages(prevMessages => 
-              prevMessages.map(msg => 
-                msg.id === aiPlaceholderMessage.id 
-                  ? { ...msg, text: currentAiText, isLoading: false } 
-                  : msg
-              )
-            );
-          } else if (eventType === 'debug') {
-            // Handle debug metadata
-            try {
-              const debugMetadata = JSON.parse(eventData);
-              
-              // Update the message with the full metadata object and processing time
-              setMessages(prevMessages => {
-                return prevMessages.map(msg => 
-                  msg.id === aiPlaceholderMessage.id 
-                    ? { 
-                        ...msg, 
-                        // Store the entire metadata object
-                        metadata: debugMetadata, 
-                        // Also store processing time directly for convenience
-                        processingTime: debugMetadata.total_duration_ms 
-                                        ? Math.round(debugMetadata.total_duration_ms)
-                                        : undefined,
-                        isLoading: false 
-                      } 
-                    : msg
-                );
-              });
-            } catch (err) {
-              console.error("Error parsing debug metadata:", err);
+
+        buffer += decoder.decode(value, { stream: true });
+        // console.log("Current buffer:", JSON.stringify(buffer));
+
+        // Process complete message blocks from the buffer (separated by \n\n)
+        let blockEndIndex;
+        while ((blockEndIndex = buffer.indexOf('\n\n')) >= 0) {
+          const messageBlock = buffer.substring(0, blockEndIndex);
+          buffer = buffer.substring(blockEndIndex + 2); // Remove the processed block + \n\n
+          // console.log("Processing block:", JSON.stringify(messageBlock));
+
+          if (!messageBlock.trim()) continue; // Skip empty blocks resulting from multiple \n\n
+          let blockEventType = 'message'; // Default type for this block
+          let blockDataContent = ''; // Accumulate data lines *within this block*
+          let isInsideDataField = false; // Flag to track if we are processing multi-line data
+          const lines = messageBlock.split('\n');
+
+          for (const line of lines) {
+            if (line.startsWith('event:')) {
+                blockEventType = line.substring(6).trim();
+                isInsideDataField = false; // Reset flag on new event
+            } else if (line.startsWith('data:')) {
+                // Extract data content
+                let data = line.substring(5);
+                if (data.startsWith(' ')) {
+                    data = data.substring(1);
+                }
+                // If we were already inside a data field (multi-line), prepend a newline
+                if (isInsideDataField) {
+                     blockDataContent += '\n';
+                }
+                blockDataContent += data;
+                isInsideDataField = true; // We are now processing a data field
+            } else if (isInsideDataField) {
+                // If we are inside a data field, append this line as continuation
+                blockDataContent += '\n' + line;
+            } else if (line.startsWith(':')) {
+                // Ignore comments
+                 isInsideDataField = false; // Comments end data fields
+            } else if (line.trim()) {
+                 // Log detailed info about the unexpected line
+                 const charCodes = Array.from(line).map(char => char.charCodeAt(0));
+                 console.warn(`Ignoring unexpected line in SSE block. Line: "${line}", CharCodes: [${charCodes.join(', ')}]`);
+                 isInsideDataField = false; // Unexpected lines likely end data fields
             }
           }
-        }
+
+          // Reset flag after processing the block (belt and suspenders)
+          isInsideDataField = false;
+
+          // Process the fully accumulated data based on the event type for this block
+          if (blockEventType === 'message') {
+              // Append the accumulated data (potentially multi-line) from this block
+              if (blockDataContent) {
+                 console.log("Adding content from block:", JSON.stringify(blockDataContent));
+                 currentAiText += blockDataContent;
+              }
+          } else if (blockEventType === 'debug') {
+              // Try parsing metadata
+              try {
+                  const parsedMeta = JSON.parse(blockDataContent);
+                  metadata = parsedMeta; // Store the latest metadata
+                  console.log("Received debug metadata:", metadata);
+              } catch (e) {
+                  console.error("Failed to parse debug metadata:", e, "Raw:", blockDataContent);
+              }
+          }
+          
+          // Update UI progressively ONLY if text was added
+          if (blockEventType === 'message' && blockDataContent) {
+              setMessages(prevMessages =>
+               prevMessages.map(msg =>
+                 msg.id === aiPlaceholderMessage.id
+                   ? { ...msg, text: currentAiText, isLoading: true }
+                   : msg
+               )
+             );
+          }
+        } // end while loop for processing blocks in buffer
+      } // end while loop for reading stream
+
+      // Flush the decoder in case there are any remaining bytes
+      buffer += decoder.decode(); 
+
+      // Process any remaining data in the buffer after the stream ends
+      if (buffer.trim()) { // Check if there's anything left in the buffer to process
+          // Re-process the remaining buffer content using the line parser logic
+          let remainingLines = buffer.split('\n');
+          for (const line of remainingLines) {
+              const trimmedLine = line.trim();
+              if (trimmedLine.startsWith('data:')) {
+                  let data = trimmedLine.substring(5);
+                  if (data.startsWith(' ')) {
+                      data = data.substring(1);
+                  }
+                  currentAiText += data;
+              } // Add handling for event/comment lines if necessary in final buffer
+          }
       }
-      
-      // Final update to ensure loading state is false if stream ends
-      setMessages(prevMessages => 
-        prevMessages.map(msg => 
-          msg.id === aiPlaceholderMessage.id 
-            ? { ...msg, isLoading: false } 
+
+      // Final UI update after the stream ends
+      setMessages(prevMessages =>
+        prevMessages.map(msg =>
+          msg.id === aiPlaceholderMessage.id
+            ? { 
+                ...msg, 
+                text: currentAiText, // Ensure final text is set
+                isLoading: false, // Ensure loading is false
+                metadata: metadata || msg.metadata // Apply final metadata
+              }
             : msg
         )
       );
@@ -372,9 +412,10 @@ function ChatPage() {
                       {msg.isUser ? (
                         msg.text // Render user text directly
                       ) : (
+                        // Use ReactMarkdown for AI responses
                         <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                          {msg.text} 
-                        </ReactMarkdown> // Render AI text using ReactMarkdown
+                          {msg.text}
+                        </ReactMarkdown>
                       )}
                     </div>
                     <div className="message-footer">
